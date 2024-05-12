@@ -58,7 +58,7 @@ def batch_packet_preprocessing(
     eps: float = 1e-12,
     log_scale: bool = False,
     mode: str = "reflect",
-    cuda: bool = True,
+    cuda: bool = False,
 ) -> np.ndarray:
     """Preprocess image batches by computing the wavelet packet representation.
 
@@ -83,6 +83,8 @@ def batch_packet_preprocessing(
     image_batch_tensor = torch.from_numpy(image_batch.astype(np.float32))
     if cuda:
         image_batch_tensor = image_batch_tensor.cuda()
+    else:
+        image_batch_tensor = image_batch_tensor.to("mps")
     # transform to from H, W, C to C, H, W
     channels = []
     for channel in range(image_batch_tensor.shape[-1]):

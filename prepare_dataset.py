@@ -5,8 +5,6 @@ import functools
 import os
 import pickle
 import random
-from collections import namedtuple
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from typing import Tuple
@@ -15,17 +13,42 @@ from typing import Tuple
 import numpy as np
 import torch
 from PIL import Image
-
-from corruption import (
-    blur,
-    jpeg_compression,
-    noise,
-    random_resized_crop,
-    random_rotation,
-)
 from data_loader import NumpyDataset
 from fourier_math import batch_fourier_preprocessing
 from wavelet_math import batch_packet_preprocessing, identity_processing
+
+
+def resize_and_pad(image, target_size=(224, 224)):
+    """
+    Resize the image to the target size while maintaining aspect ratio.
+    If the image is smaller than the target size, pad it with zeros.
+    If the image is larger than the target size, crop it from the center.
+    """
+    width, height = image.size
+    target_width, target_height = target_size
+
+    # Calculate aspect ratios
+    aspect_ratio_image = width / height
+    aspect_ratio_target = target_width / target_height
+
+    if aspect_ratio_image > aspect_ratio_target:
+        # Image is wider, crop width
+        new_width = int(height * aspect_ratio_target)
+        resized_image = image.resize((new_width, target_height))
+        left = (new_width - target_width) // 2
+        right = new_width - left
+        padded_image = Image.new("RGB", target_size)
+        padded_image.paste(resized_image, (left, 0))
+    else:
+        # Image is taller, crop height
+        new_height = int(width / aspect_ratio_target)
+        resized_image = image.resize((target_width, new_height))
+        top = (new_height - target_height) // 2
+        bottom = new_height - top
+        padded_image = Image.new("RGB", target_size)
+        padded_image.paste(resized_image, (0, top))
+
+    return padded_image
 
 
 class WelfordEstimator:
@@ -179,7 +202,7 @@ def load_perturb_and_stack(
     label_list = []
     for path_to_image in path_list:
         image = Image.open(path_to_image)
-        image = image.resize(size=(224, 224))
+        image = resize_and_pad(image, target_size=(224, 224))
 
         image_list.append(np.array(image))
         label_list.append(np.array(get_label(path_to_image, binary_classification)))
@@ -283,7 +306,9 @@ def load_folder(
     # noqa: DAR401
     """
     file_list = list(folder.glob("./*.jpg"))
-    print(file_list)
+    print("folder: ", folder)
+    print("file_list_len: ", len(file_list))
+    print(train_size + val_size + test_size)
     if len(file_list) < train_size + val_size + test_size:
         raise ValueError(
             "Requested set sizes must be smaller or equal to the number of images available."
@@ -333,7 +358,7 @@ def pre_process_folder(
     if feature == "raw":
         folder_name = f"{data_dir.name}_{feature}"
     else:
-        folder_name = f"{data_dir.name}_{feature}_{wavelet}_{boundary}_{level}"
+        folder_name = f"224_{data_dir.name}_{feature}_{wavelet}_{boundary}_{level}"
     target_dir = data_dir.parent / folder_name
 
     if feature == "packets":
@@ -366,6 +391,7 @@ def pre_process_folder(
 
     train_list = []
     validation_list = []
+    print("val size: ", len(validation_list))
     test_list = []
 
     for folder in folder_list:
@@ -381,8 +407,8 @@ def pre_process_folder(
         else:
             train_result, val_result, test_result = load_folder(
                 folder,
-                train_size=int(train_size * gan_split_factor),
-                val_size=int(val_size * gan_split_factor),
+                train_size=int(train_size),
+                val_size=int(val_size),
                 test_size=test_size,
             )
         train_list.extend(train_result)
@@ -446,19 +472,19 @@ def parse_args():
     parser.add_argument(
         "--train-size",
         type=int,
-        default=63_000,
+        default=7200,
         help="Desired size of the training subset of each folder. (default: 63_000).",
     )
     parser.add_argument(
         "--test-size",
         type=int,
-        default=5_000,
+        default=1400,
         help="Desired size of the test subset of each folder. (default: 5_000).",
     )
     parser.add_argument(
         "--val-size",
         type=int,
-        default=2_000,
+        default=1400,
         help="Desired size of the validation subset of each folder. (default: 2_000).",
     )
     parser.add_argument(
@@ -563,7 +589,6 @@ if __name__ == "__main__":
         val_size=args.val_size,
         test_size=args.test_size,
         feature=feature,
-        # missing_label=args.missing_label,
         gan_split_factor=args.gan_split_factor,
         wavelet=args.wavelet,
         boundary=args.boundary,
