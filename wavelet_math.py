@@ -32,7 +32,9 @@ def compute_pytorch_packet_representation_2d_tensor(
     """
     wavelet = pywt.Wavelet(wavelet_str)
     # print('wavelet', wavelet_str)
-    ptwt_wp_tree = ptwt.WaveletPacket2D(data=pt_data, wavelet=wavelet, mode=mode)
+    ptwt_wp_tree = ptwt.WaveletPacket2D(
+        data=pt_data, wavelet=wavelet, mode=mode, maxlevel=max_lev
+    )
 
     # get the pytorch decomposition
     # batch_size = pt_data.shape[0]
@@ -84,7 +86,8 @@ def batch_packet_preprocessing(
     if cuda:
         image_batch_tensor = image_batch_tensor.cuda()
     else:
-        image_batch_tensor = image_batch_tensor.to("mps")
+        cuda = torch.device("cuda")
+        image_batch_tensor = image_batch_tensor.to(cuda)
     # transform to from H, W, C to C, H, W
     channels = []
     for channel in range(image_batch_tensor.shape[-1]):

@@ -1,4 +1,5 @@
 """This module contains code for deepfake detection models."""
+
 import numpy as np
 import torch
 
@@ -143,7 +144,6 @@ class CNN(torch.nn.Module):
             out = torch.reshape(out, [out.shape[0], -1])
             out = self.linear(out)
         else:
-            print(to_net.shape)
             out = self.layers(to_net)
             out = torch.reshape(out, [out.shape[0], -1])
             out = self.linear(out)

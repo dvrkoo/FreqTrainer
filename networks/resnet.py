@@ -103,7 +103,7 @@ class ResNet(nn.Module):
         if self.feature == "packets":
             # Modify input layer for packets
             self.conv1 = nn.Conv2d(
-                3072, 64, kernel_size=3, stride=1, padding=1, bias=False
+                4 * 3, 64, kernel_size=3, stride=1, padding=1, bias=False
             )
         elif self.feature == "image":
             # No modification needed for image input

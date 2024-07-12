@@ -39,15 +39,38 @@ class NumpyDataset(Dataset):
 
         # noqa: DAR401
         """
-        self.data_dir = data_dir
-        self.file_lst = sorted(Path(data_dir).glob("./*.npy"))
-        print("Loading ", data_dir)
-        if len(self.file_lst) == 0:
-            raise ValueError("empty directory")
-        if self.file_lst[-1].name != "labels.npy":
-            raise ValueError("unexpected file name")
-        self.labels = np.load(self.file_lst[-1])
-        self.images = self.file_lst[:-1]
+        self.data_dir = Path(data_dir)
+        print(f"Loading data from {self.data_dir}")
+
+        # Find all .npy files
+        self.file_lst = sorted(self.data_dir.glob("*.npy"))
+
+        if not self.file_lst:
+            raise ValueError(f"No .npy files found in {self.data_dir}")
+
+        # Find the labels file
+        self.label_file = next(
+            (f for f in self.file_lst if f.name == "labels.npy"), None
+        )
+        self.path_file = next((f for f in self.file_lst if f.name == "paths.npy"), None)
+        if self.label_file is None:
+            raise ValueError(f"labels.npy not found in {self.data_dir}")
+
+        # Remove the labels file from the image list
+        self.images = [
+            f for f in self.file_lst if f not in (self.label_file, self.path_file)
+        ]
+
+        # Load labels
+        self.labels = np.load(self.label_file)
+        self.paths = np.load(self.path_file, allow_pickle=True)
+
+        # Validate that we have the same number of images and labels
+        if len(self.images) != len(self.labels):
+            raise ValueError(
+                f"Mismatch between number of images ({len(self.images)}) and labels ({len(self.labels)})"
+            )
+
         self.mean = mean
         self.std = std
         self.key = key
@@ -74,7 +97,8 @@ class NumpyDataset(Dataset):
             image = (image - self.mean) / self.std
         label = self.labels[idx]
         label = torch.tensor(int(label))
-        sample = {self.key: image, "label": label}
+        path = self.paths[idx]
+        sample = {self.key: image, "label": label, "file_path": path}
         return sample
 
 

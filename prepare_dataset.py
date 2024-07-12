@@ -8,7 +8,7 @@ import random
 from pathlib import Path
 from typing import Optional
 from typing import Tuple
-
+from scipy.ndimage import zoom
 
 import numpy as np
 import torch
@@ -97,6 +97,45 @@ class WelfordEstimator:
         return self.mean, torch.sqrt(self.m2 / self.count)
 
 
+def get_label_of_pixel(
+    path_of_folder: Path, binary_classification: bool = False
+) -> int:
+    """Get the label of the images in a folder based on the folder path.
+
+        We assume:
+            A: Orignal data, B: First gan,
+            C: Second gan, D: Third gan, E: Fourth gan.
+        A working folder structure could look like:
+            A_celeba  B_CramerGAN  C_MMDGAN  D_ProGAN  E_SNGAN
+        With each folder containing the images from the corresponding
+        source.
+
+    Args:
+        path_of_folder (Path):  Path string containing only a single
+            underscore directly after the label letter.
+        binary_classification (bool): If flag is set, we only classify binarily, i.e. whether an image is real or fake.
+            In this case, the prefix 'A' indicates real, \
+            which is encoded with the label 0. All other folders are considered
+            fake data, encoded with the label 1.
+
+    Raises:
+       NotImplementedError: Raised if the label letter is unkown.
+
+    Returns:
+        int: The label encoded as integer.
+
+    # noqa: DAR401
+    """
+    label_str = path_of_folder.name.split("_")[0]
+    if binary_classification:
+        # differentiate original and generated data
+        if label_str == "original":
+            return 0
+        else:
+            return 1
+    return label
+
+
 def get_label_of_folder(
     path_of_folder: Path, binary_classification: bool = False
 ) -> int:
@@ -174,7 +213,7 @@ def get_label(path_to_image: Path, binary_classification: bool) -> int:
     Returns:
         int: The label encoded as integer.
     """
-    return get_label_of_folder(path_to_image.parent, binary_classification)
+    return get_label_of_pixel(path_to_image.parent, binary_classification)
 
 
 def load_perturb_and_stack(
@@ -202,11 +241,12 @@ def load_perturb_and_stack(
     label_list = []
     for path_to_image in path_list:
         image = Image.open(path_to_image)
-        image = resize_and_pad(image, target_size=(224, 224))
-
+        # image = resize_and_pad(image, target_size=(128, 128))
+        image = image.resize((224, 224))
         image_list.append(np.array(image))
         label_list.append(np.array(get_label(path_to_image, binary_classification)))
-    return np.stack(image_list), label_list
+        # path_list maintains the order corresponding to image_list and label_list
+    return np.stack(image_list), label_list, path_list
 
 
 def save_to_disk(
@@ -240,6 +280,22 @@ def save_to_disk(
     return file_count
 
 
+def upscale_wavelet_packets(batch):
+    # Assume batch is of shape [560, 4, 112, 112, 3]
+    B, P, H, W, C = batch.shape
+    scale_factor = 224 / 112  # 2 in this case
+
+    # Preallocate the output array
+    output = np.empty((B, P, 224, 224, C), dtype=batch.dtype)
+
+    for i in range(B):
+        for j in range(P):
+            # Upscale each packet individually
+            output[i, j] = zoom(batch[i, j], (scale_factor, scale_factor, 1), order=1)
+
+    return output
+
+
 def load_process_store(
     file_list,
     preprocessing_batch_size,
@@ -266,16 +322,24 @@ def load_process_store(
     file_count = 0
     directory = str(target_dir) + "_" + label_string
     all_labels = []
+    all_paths = []
     for current_file_batch in batched_files:
         # load, process and store the current batch training set.
-        image_batch, labels = load_perturb_and_stack(
+        image_batch, labels, paths = load_perturb_and_stack(
             current_file_batch,
             binary_classification=binary_classification,
         )
         all_labels.extend(labels)
+        all_paths.extend(paths)
         processed_batch = process(image_batch)
+        if args.upscale:
+            processed_batch = upscale_wavelet_packets(processed_batch)
         file_count = save_to_disk(processed_batch, directory, file_count, dir_suffix)
         print(file_count, label_string, "files processed", flush=True)
+
+    # save paths
+    with open(f"{directory}{dir_suffix}/paths.npy", "wb") as path_file:
+        np.save(path_file, np.array(all_paths))
 
     # save labels
     with open(f"{directory}{dir_suffix}/labels.npy", "wb") as label_file:
@@ -305,7 +369,7 @@ def load_folder(
 
     # noqa: DAR401
     """
-    file_list = list(folder.glob("./*.jpg"))
+    file_list = list(folder.glob("./*.png"))
     print("folder: ", folder)
     print("file_list_len: ", len(file_list))
     print(train_size + val_size + test_size)
@@ -319,6 +383,132 @@ def load_folder(
     validation_list = file_list[train_size : (train_size + val_size)]
     test_list = file_list[(train_size + val_size) : (train_size + val_size + test_size)]
     return np.asarray([train_list, validation_list, test_list], dtype=object)
+
+
+def pre_process_folder_from_pixel(
+    data_folder: str,
+    preprocessing_batch_size: int,
+    train_size: int,
+    val_size: int,
+    test_size: int,
+    feature: Optional[str] = None,
+    wavelet: str = "db1",
+    boundary: str = "reflect",
+    gan_split_factor: float = 1.0,
+    level: int = 3,
+) -> None:
+    """Preprocess a folder containing sub-directories with images from different sources.
+
+    All images are expected to have the same size.
+    The sub-directories are expected to indicate to label their source in
+    their name. For example,  A - for real and B - for GAN generated imagery.
+
+    Args:
+        data_folder (str): The folder with the real and gan generated image folders.
+        preprocessing_batch_size (int): The batch_size used for image conversion.
+        train_size (int): Desired size of the test subset of each folder.
+        val_size (int): Desired size of the validation subset of each folder.
+        test_size (int): Desired size of the test subset of each folder.
+        feature (str): The feature to pre-compute (choose packets, log_packets or raw).
+        missing_label (int): label to leave out of training and validation set (choose from {0, 1, 2, 3, 4, None})
+        gan_split_factor (float): factor by which the training and validation subset sizes are scaled for each GAN,
+            if a missing label is specified.
+        jpeg_compression_number (int): jpeg comression factor used for robustness testing.
+            Defaults to None.
+        rotation_and_crop (bool): If true some images are randomly cropped or rotated.
+            Defaults to False.
+    """
+    data_dir = Path(data_folder)
+    if feature == "raw":
+        folder_name = f"{data_dir.name}_{feature}"
+    else:
+        folder_name = f"224_{data_dir.name}_{feature}_{wavelet}_{boundary}_{level}"
+    target_dir = data_dir.parent / folder_name
+
+    if feature == "packets":
+        processing_function = functools.partial(
+            batch_packet_preprocessing, wavelet=wavelet, mode=boundary, max_lev=level
+        )
+    elif feature == "log_packets":
+        processing_function = functools.partial(
+            batch_packet_preprocessing,
+            log_scale=True,
+            wavelet=wavelet,
+            mode=boundary,
+            max_lev=level,
+        )
+    elif feature == "fourier":
+        processing_function = functools.partial(batch_fourier_preprocessing)
+    elif feature == "log_fourier":
+        processing_function = functools.partial(
+            batch_fourier_preprocessing, log_scale=True
+        )
+    else:
+        processing_function = identity_processing  # type: ignore
+
+    # folder_list = sorted(data_dir.glob("./*"))
+    train_folder = os.path.join(data_dir, "train")
+    val_folder = os.path.join(data_dir, "val")
+    test_folder = os.path.join(data_dir, "test")
+    folder_list = [train_folder, val_folder, test_folder]
+
+    train_list = []
+    validation_list = []
+    test_list = []
+
+    for folder in folder_list:
+        # real data
+        for class_name in os.listdir(folder):
+            file_list = list(Path(folder + "/" + class_name).glob("./*.png"))
+            if folder == train_folder:
+                train_list.extend(file_list)
+            elif folder == val_folder:
+                validation_list.extend(file_list)
+            elif folder == test_folder:
+                test_list.extend(file_list)
+
+    train_list = np.asarray(train_list)
+    validation_list = np.asarray(validation_list)
+    test_list = np.asarray(test_list)
+    print(train_list)
+    # train_list[0]
+    # PosixPath('/nvme/mwolter/celeba/celeba_align_png_cropped/D_ProGAN/ProGAN_00101489.png')
+
+    dir_suffix = ""
+
+    binary_classification = True
+
+    # group the sets into smaller batches to go easy on the memory.
+    # print("processing validation set.", flush=True)
+
+    for data_set, set_name in [
+        (validation_list, "val"),
+        (test_list, "test"),
+        (train_list, "train"),
+    ]:
+        print(f"processing {set_name} set.", flush=True)
+        load_process_store(
+            data_set,
+            preprocessing_batch_size,
+            processing_function,
+            target_dir,
+            set_name,
+            dir_suffix=dir_suffix,
+            binary_classification=binary_classification,
+        )
+        print(f"{set_name} set stored")
+
+    # compute training normalization.
+    # load train data and compute mean and std
+    print("computing mean and std values.")
+    train_data_set = NumpyDataset(f"{target_dir}_train{dir_suffix}")
+    welford = WelfordEstimator()
+    for img_no in range(train_data_set.__len__()):
+        welford.update(train_data_set.__getitem__(img_no)["image"])
+    mean, std = welford.finalize()
+    print("mean", mean, "std:", std)
+    with open(f"{target_dir}_train{dir_suffix}/mean_std.pkl", "wb") as f:
+        pickle.dump([mean.numpy(), std.numpy()], f)
 
 
 def pre_process_folder(
@@ -391,7 +581,6 @@ def pre_process_folder(
 
     train_list = []
     validation_list = []
-    print("val size: ", len(validation_list))
     test_list = []
 
     for folder in folder_list:
@@ -463,10 +652,14 @@ def pre_process_folder(
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-
     parser.add_argument(
-        "directory",
+        "--upscale",
+        action="store_true",
+    )
+    parser.add_argument(
+        "-directory",
         type=str,
+        default="/home/nick/ff_crops/neuraltextures_crops/",
         help="The folder with the real and gan generated image folders.",
     )
     parser.add_argument(
@@ -561,7 +754,7 @@ def parse_args():
     parser.add_argument(
         "--level",
         type=int,
-        default=3,
+        default=1,
         help="Sets the maximum decomposition level if a packet representation is chosen.",
     )
 
@@ -582,7 +775,7 @@ if __name__ == "__main__":
     else:
         feature = "raw"
 
-    pre_process_folder(
+    pre_process_folder_from_pixel(
         data_folder=args.directory,
         preprocessing_batch_size=args.batch_size,
         train_size=args.train_size,
