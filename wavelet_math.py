@@ -12,6 +12,46 @@ import pywt
 import torch
 
 
+def rgb_to_y(images):
+    # Ensure input is float32 for precision
+    images = images.astype(np.float32)
+
+    # RGB to Y conversion coefficients
+    coeffs = np.array([0.299, 0.587, 0.114])
+
+    # Calculate Y component
+    y = np.dot(images, coeffs)
+
+    # Reshape to maintain original dimensions, but with only one channel
+    return y.reshape(images.shape[:-1])
+
+
+def rgb_to_ycbcr(images):
+    # Ensure input is float32 for precision
+    # images = images.astype(np.float32)
+
+    # RGB to YCbCr conversion matrix
+    transform = np.array(
+        [
+            [0.299, 0.587, 0.114],
+            [-0.168736, -0.331264, 0.5],
+            [0.5, -0.418688, -0.081312],
+        ]
+    )
+
+    # Offset for Cb and Cr components
+    offset = np.array([0, 128, 128])
+
+    # Reshape the input to (B*H*W, C)
+    reshaped = images.reshape(-1, 3)
+
+    # Apply the transformation
+    ycbcr = np.dot(reshaped, transform.T) + offset
+
+    # Reshape back to original shape
+    return ycbcr.reshape(images.shape)
+
+
 def compute_pytorch_packet_representation_2d_tensor(
     pt_data: torch.Tensor,
     wavelet_str: str = "db5",
@@ -61,6 +101,7 @@ def batch_packet_preprocessing(
     log_scale: bool = False,
     mode: str = "reflect",
     cuda: bool = False,
+    ycbcr: bool = False,
 ) -> np.ndarray:
     """Preprocess image batches by computing the wavelet packet representation.
 
@@ -82,6 +123,8 @@ def batch_packet_preprocessing(
     Returns:
         [np.ndarray]: The wavelet packets [B, N, H, W, C].
     """
+    if ycbcr:
+        image_batch = rgb_to_ycbcr(image_batch)
     image_batch_tensor = torch.from_numpy(image_batch.astype(np.float32))
     if cuda:
         image_batch_tensor = image_batch_tensor.cuda()

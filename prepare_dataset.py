@@ -9,6 +9,14 @@ from pathlib import Path
 from typing import Optional
 from typing import Tuple
 from scipy.ndimage import zoom
+import cv2
+from corruption import (
+    blur,
+    jpeg_compression,
+    noise,
+    random_resized_crop,
+    random_rotation,
+)
 
 import numpy as np
 import torch
@@ -219,10 +227,11 @@ def get_label(path_to_image: Path, binary_classification: bool) -> int:
 def load_perturb_and_stack(
     path_list: np.ndarray,
     binary_classification: bool = False,
+    perturbation: bool = False,
 ) -> tuple:
     """Transform a lists of paths into a batches of numpy arrays and record their labels.
 
-        If enabled, some images will be corruped here for robustness testing.
+        If enabled, some images will be corrupted here for robustness testing.
 
     Args:
         path_list (ndarray): An array of Poxis paths strings.
@@ -237,13 +246,47 @@ def load_perturb_and_stack(
             (preprocessing_batch_size, height, width, 3)
             and a list of length preprocessing_batch_size.
     """
+    perturbation = args.perturbation
     image_list = []
     label_list = []
+    image_seed = 42
+    random.seed(image_seed)
+    np.random.seed(image_seed)
+    split_type = str(path_list[0]).split("/")[-3]
+    if split_type == "train":
+        perturb_prob = 0.6
+    elif split_type == "val":
+        perturb_prob = 0.25
+    else:  # test
+        perturb_prob = 0
+    perturbation_types = ["rotate", "crop", "jpeg", "noise", "blur"]
     for path_to_image in path_list:
         image = Image.open(path_to_image)
         # image = resize_and_pad(image, target_size=(128, 128))
-        image = image.resize((224, 224))
-        image_list.append(np.array(image))
+        image = image.resize((112, 112))
+
+        if random.random() < perturb_prob and perturbation:
+            num_perturbations = random.randint(1, 5)
+            selected_perturbations = random.choices(
+                perturbation_types, k=num_perturbations
+            )
+
+            for perturbation_type in selected_perturbations:
+                if perturbation_type == "rotate":
+                    image = random_rotation(image, seed=image_seed)
+                elif perturbation_type == "crop":
+                    image = random_resized_crop(image, seed=image_seed)
+                elif perturbation_type == "jpeg":
+                    image = jpeg_compression(image, seed=image_seed)
+                elif perturbation_type == "noise":
+                    image = noise(image, seed=image_seed)
+                elif perturbation_type == "blur":
+                    image = blur(image, seed=image_seed)
+
+        image = np.array(image)
+        if args.ycbcr:
+            image = cv2.cvtColor(image, cv2.COLOR_RGB2YCrCb)
+        image_list.append(image)
         label_list.append(np.array(get_label(path_to_image, binary_classification)))
         # path_list maintains the order corresponding to image_list and label_list
     return np.stack(image_list), label_list, path_list
@@ -267,6 +310,10 @@ def save_to_disk(
     Returns:
         int: The new total of storage images.
     """
+    if args.ycbcr:
+        dir_suffix += "_ycbcr"
+    if args.perturbation:
+        dir_suffix += "_perturbed"
     # loop over the batch dimension
     if not os.path.exists(f"{directory}{dir_suffix}"):
         print("creating", f"{directory}{dir_suffix}", flush=True)
@@ -336,7 +383,10 @@ def load_process_store(
             processed_batch = upscale_wavelet_packets(processed_batch)
         file_count = save_to_disk(processed_batch, directory, file_count, dir_suffix)
         print(file_count, label_string, "files processed", flush=True)
-
+    if args.ycbcr:
+        dir_suffix += "_ycbcr"
+    if args.perturbation:
+        dir_suffix += "_perturbed"
     # save paths
     with open(f"{directory}{dir_suffix}/paths.npy", "wb") as path_file:
         np.save(path_file, np.array(all_paths))
@@ -427,7 +477,11 @@ def pre_process_folder_from_pixel(
 
     if feature == "packets":
         processing_function = functools.partial(
-            batch_packet_preprocessing, wavelet=wavelet, mode=boundary, max_lev=level
+            batch_packet_preprocessing,
+            wavelet=wavelet,
+            mode=boundary,
+            max_lev=level,
+            ycbcr=args.ycbcr,
         )
     elif feature == "log_packets":
         processing_function = functools.partial(
@@ -479,7 +533,7 @@ def pre_process_folder_from_pixel(
     binary_classification = True
 
     # group the sets into smaller batches to go easy on the memory.
-    # print("processing validation set.", flush=True)
+    print("processing validation set.", flush=True)
 
     for data_set, set_name in [
         (validation_list, "val"),
@@ -507,6 +561,10 @@ def pre_process_folder_from_pixel(
         welford.update(train_data_set.__getitem__(img_no)["image"])
     mean, std = welford.finalize()
     print("mean", mean, "std:", std)
+    if args.ycbcr:
+        dir_suffix += "_ycbcr"
+    if args.perturbation:
+        dir_suffix += "_perturbed"
     with open(f"{target_dir}_train{dir_suffix}/mean_std.pkl", "wb") as f:
         pickle.dump([mean.numpy(), std.numpy()], f)
 
@@ -756,6 +814,17 @@ def parse_args():
         type=int,
         default=1,
         help="Sets the maximum decomposition level if a packet representation is chosen.",
+    )
+    # add ycbcr bool
+    parser.add_argument(
+        "--ycbcr",
+        action="store_true",
+        help="If flag is set, the YCbCr color space is used for the wavelet transform.",
+    )
+    parser.add_argument(
+        "--perturbation",
+        action="store_true",
+        help="If flag is set, the perturbations are applied",
     )
 
     return parser.parse_args()

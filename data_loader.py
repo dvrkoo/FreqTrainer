@@ -14,6 +14,16 @@ from torch.utils.data import Dataset
 
 __all__ = ["NumpyDataset", "CombinedDataset"]
 
+# Set the seed for reproducibility
+seed = 42
+np.random.seed(seed)
+torch.manual_seed(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
 class NumpyDataset(Dataset):
     """Create a data loader to load pre-processed numpy arrays into memory."""
@@ -92,25 +102,39 @@ class NumpyDataset(Dataset):
 
 
 class CombinedDataset(Dataset):
-    """Load data from multiple Numpy-Data sets using a singe object."""
+    """Load data from multiple Numpy datasets ensuring matching image paths."""
 
     def __init__(self, sets: list):
-        """Create an merged dataset, combining many numpy datasets.
+        """Create a merged dataset, ensuring that the image paths match.
 
         Args:
             sets (list): A list of NumpyDataset objects.
         """
         self.sets = sets
         self.len = len(sets[0])
-        # assert not any(self.len != len(s) for s in sets)
+        self._validate_paths()  # Ensure that paths match between datasets
+        self.paths_dict = self._create_paths_dict()
 
-    @property
-    def key(self) -> list:
-        """Return the keys for all features in this dataset."""
-        return [d.key for d in self.sets]
+    def _validate_paths(self):
+        """Ensure that all datasets have matching image paths."""
+        reference_paths = self.sets[0].paths
+        for dataset in self.sets[1:]:
+            if dataset.paths != reference_paths:
+                raise ValueError("Datasets have mismatched image paths!")
+
+    def _create_paths_dict(self):
+        """Create a dictionary mapping paths to their index."""
+        paths_dict = {}
+        for dataset in self.sets:
+            for idx in range(len(dataset)):
+                path = dataset.paths[idx]
+                if path in paths_dict:
+                    raise ValueError(f"Path conflict found: {path}")
+                paths_dict[path] = idx
+        return paths_dict
 
     def __len__(self) -> int:
-        """Return the data set length."""
+        """Return the dataset length."""
         return self.len
 
     def __getitem__(self, idx: int) -> dict:
@@ -120,17 +144,77 @@ class CombinedDataset(Dataset):
             idx (int): The element index of the data pair to return.
 
         Returns:
-            [dict]: Returns a dictionary with the self.key
-                    default ("image") and "label" keys.
-                    The key property will return a keylist.
+            dict: Returns a dictionary with images from both datasets and "label".
         """
-        label_list = [s.__getitem__(idx)["label"] for s in self.sets]
-        # the labels should all be the same
-        # assert not any([label_list[0] != l for l in label_list])
-        label = label_list[0]
-        dict = {set.key: set.__getitem__(idx)[set.key] for set in self.sets}
-        dict["label"] = label
-        return dict
+        path = self.sets[0].paths[idx]  # Use the path from the first dataset
+        images = {}
+
+        for i, dataset in enumerate(self.sets):
+            dataset_idx = self.paths_dict[path]
+            image = dataset.__getitem__(dataset_idx)[dataset.key]
+            images[f"image_set_{i+1}"] = image  # Store each image in a separate key
+
+        label = self.sets[0].__getitem__(idx)[
+            "label"
+        ]  # Use label from the first dataset
+
+        return {"images": images, "label": label}
+
+
+class CombinedDataset(Dataset):
+    """Load data from multiple Numpy datasets using a single object."""
+
+    def __init__(self, sets: list):
+        """Create a merged dataset, combining many numpy datasets.
+
+        Args:
+            sets (list): A list of NumpyDataset objects.
+        """
+        self.sets = sets
+        self.len = len(sets[0])
+        self.paths_dict = self._create_paths_dict()
+
+    def _create_paths_dict(self):
+        """Create a dictionary mapping paths to their index."""
+        paths_dict = {}
+        for dataset in self.sets:
+            for idx in range(len(dataset)):
+                path = dataset.paths[idx]
+                if path in paths_dict:
+                    raise ValueError(f"Path conflict found: {path}")
+                paths_dict[path] = idx
+        return paths_dict
+
+    def __len__(self) -> int:
+        """Return the dataset length."""
+        return self.len
+
+    def __getitem__(self, idx: int) -> dict:
+        """Get a dataset element.
+
+        Args:
+            idx (int): The element index of the data pair to return.
+
+        Returns:
+            dict: Returns a dictionary with concatenated images and "label".
+        """
+        path = self.sets[0].paths[idx]  # Use the path from the first dataset
+        concatenated_images = []
+
+        for dataset in self.sets:
+            dataset_idx = self.paths_dict[path]
+            image = dataset.__getitem__(dataset_idx)[dataset.key]
+            concatenated_images.append(image)
+        print("shape1", concatenated_images[0].shape())
+        print("shape2", concatenated_images[1].shape())
+        concatenated_images = torch.cat(
+            concatenated_images, dim=1
+        )  # Concatenate along channel dimension
+        label = self.sets[0].__getitem__(idx)[
+            "label"
+        ]  # Use label from the first dataset
+
+        return {"image": concatenated_images, "label": label}
 
 
 def main():

@@ -4,11 +4,13 @@ import argparse
 import os
 import pickle
 from typing import Any, Tuple
-
+from torch.optim.lr_scheduler import StepLR
+from data_loader import DoubleDataset
 from comet_ml import Experiment
 from comet_ml.integration.pytorch import log_model
-
-
+from transform import CustomImageDataset
+from itertools import zip_longest
+import torchvision.models as torch_models
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,18 +18,29 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from data_loader import CombinedDataset, NumpyDataset
+from data_loader import CombinedDataset, NumpyDataset, DoubleNumpyDataset
 from models import CNN, Regression, compute_parameter_total, save_model
 from resnet import ResNet50
+from resnet import Bottleneck
+from resnet import LateFusionResNet, CrossAttentionModel
 
 experiment = Experiment(
     api_key="WQRfjlovs7RSjYUmjlMvNt3PY", project_name="general", workspace="dvrkoo"
 )
 hyper_params = {
     "learning_rate": 1e-3,
-    "steps": 4480,
-    "batch_size": 32,
+    "batch_size": 64,
 }
+
+seed = 42
+np.random.seed(seed)
+torch.manual_seed(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 
 experiment.log_parameters(hyper_params)
 
@@ -36,9 +49,11 @@ def val_test_loop(
     data_loader,
     model: torch.nn.Module,
     loss_fun,
-    make_binary_labels: bool = False,
+    make_binary_labels: bool = True,
     _description: str = "Validation",
     pbar: bool = False,
+    ycbcr: bool = False,
+    single_channel: bool = False,
 ) -> Tuple[float, Any]:
     """Test the performance of a model on a data set by calculating the prediction accuracy and loss of the model.
 
@@ -59,17 +74,30 @@ def val_test_loop(
 
         val_ok = 0.0
         for val_batch in iter(data_loader):
-            if type(data_loader.dataset) is CombinedDataset:
-                batch_images = {
-                    key: val_batch[key].to("cuda", non_blocking=True)
-                    for key in data_loader.dataset.key
-                }
-            else:
-                batch_images = val_batch[data_loader.dataset.key].to(
-                    "cuda", non_blocking=True
-                )
-            batch_labels = val_batch["label"].to("cuda", non_blocking=True)
-            out = model(batch_images)
+            # if type(data_loader.dataset) is CombinedDataset:
+            #     batch_images = {
+            #         key: val_batch[key].to("cuda", non_blocking=True)
+            #         for key in data_loader.dataset.key
+            #     }
+            # else:
+            # TODO: uncomment if not late fusion
+            # batch_images = val_batch[data_loader.dataset.key].to(
+            #     "cuda", non_blocking=True
+            # )
+            # batch_labels = val_batch["label"].to("cuda", non_blocking=True)
+            # if ycbcr:
+            #     y_channel = batch_images[..., 0]
+            #     batch_images = y_channel.unsqueeze(-1)
+            #     # batch_images = extract_y_channel(batch_images)
+            # if single_channel:
+            #     first_band = batch_images[:, 3, :, :]
+            #     batch_images = first_band.unsqueeze(1)
+            #     # if args.late:
+            image_set_1 = val_batch["image1"].to("cuda")
+            image_set_2 = val_batch["image2"].to("cuda")
+            batch_labels = val_batch["label"].to("cuda")
+            out = model(image_set_1, image_set_2)
+            # out = model((batch_images))
             if make_binary_labels:
                 batch_labels[batch_labels > 0] = 1
             val_loss = loss_fun(torch.squeeze(out), batch_labels)
@@ -84,6 +112,22 @@ def val_test_loop(
 def _parse_args():
     """Parse cmd line args for training an image classifier."""
     parser = argparse.ArgumentParser(description="Train an image classifier")
+    parser.add_argument(
+        "--cross",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--late",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--concat",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--single-channel",
+        action="store_true",
+    )
     parser.add_argument(
         "--upscale",
         action="store_true",
@@ -103,13 +147,13 @@ def _parse_args():
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-3,
+        default=1e-4,
         help="learning rate for optimizer (default: 1e-3)",
     )
     parser.add_argument(
         "--weight-decay",
         type=float,
-        default=0,
+        default=1e-5,
         help="weight decay for optimizer (default: 0)",
     )
     parser.add_argument(
@@ -125,9 +169,7 @@ def _parse_args():
         "--data-prefix",
         type=str,
         nargs="+",
-        default=[
-            "/home/nick/ff_crops/224_neuraltextures_crops_packets_haar_reflect_1_upscale"
-        ],
+        default=["/home/nick/ff_crops/224_neuraltextures_crops_packets_haar_reflect_1"],
         help="shared prefix of the data paths (default: ./data/source_data_packets)",
     )
     parser.add_argument(
@@ -174,6 +216,17 @@ def _parse_args():
         help="If specified, training samples are weighted based on their class "
         "in the loss calculation. Expects one weight per class.",
     )
+    # add ycbcr option
+    parser.add_argument(
+        "--ycbcr",
+        action="store_true",
+        help="convert images to YCbCr space",
+    )
+    parser.add_argument(
+        "--perturbation",
+        action="store_true",
+        help=" perturbed images ",
+    )
 
     # one should not specify normalization parameters and request their calculation at the same time
     group = parser.add_mutually_exclusive_group()
@@ -189,7 +242,7 @@ def _parse_args():
 def custom_collate(batch):
     # Assuming the key for images is 'image', adjust if it's different
     # print(batch[0].keys())
-    key = "packetsupscale"  # or whatever key your dataset uses for images
+    key = "packets1"  # or whatever key your dataset uses for images
     images = torch.stack([item[key] for item in batch])
     labels = torch.stack([item["label"] for item in batch])
     file_paths = [item["file_path"] for item in batch]
@@ -219,7 +272,18 @@ def upscale_wavelet_packets(batch):
 # Assume 'wavelet_batch' is your tensor of shape [B, 4, 112, 112, 3]
 
 
-def create_data_loaders(data_prefix: str, batch_size: int) -> tuple:
+def get_suffix(perturbation, ycbcr):
+    suffix = ""
+    if ycbcr:
+        suffix += "_ycbcr"
+    if perturbation:
+        suffix += "_perturbed"
+    return suffix
+
+
+def create_data_loaders(
+    data_prefix: str, batch_size: int, ycbcr=False, perturbation=False
+) -> tuple:
     """Create the data loaders needed for training.
 
     The test set is created outside a loader.
@@ -231,18 +295,18 @@ def create_data_loaders(data_prefix: str, batch_size: int) -> tuple:
         RuntimeError: Raised if the prefix is incorrect.
 
     Returns:
-        list: train_data_loader, val_data_loader, test_data_set
-
-    # noqa: DAR401
+        tuple: (train_data_loader, val_data_loader, test_data_set)
     """
     data_set_list = []
+    print(data_prefix)
     for data_prefix_el in data_prefix:
-        with open(f"{data_prefix_el}_train/mean_std.pkl", "rb") as file:
-            mean, std = pickle.load(file)
-            mean = torch.from_numpy(mean.astype(np.float32))
-            std = torch.from_numpy(std.astype(np.float32))
+        print(data_prefix_el)
+        # with open(f"{data_prefix_el}_train/mean_std.pkl", "rb") as file:
+        # mean, std = pickle.load(file)
+        # mean = torch.from_numpy(mean.astype(np.float32))
+        # std = torch.from_numpy(std.astype(np.float32))
 
-        print("mean", mean, "std", std)
+        # print("mean", mean, "std", std)
         key = "image"
         if "raw" in data_prefix_el.split("_"):
             key = "raw"
@@ -252,28 +316,28 @@ def create_data_loaders(data_prefix: str, batch_size: int) -> tuple:
             key = "fourier"
 
         train_data_set = NumpyDataset(
-            data_prefix_el + "_train",
-            mean=mean,
-            std=std,
+            (data_prefix_el + "_train" + get_suffix(perturbation, ycbcr)),
+            # mean=mean,
+            # std=std,
             key=key,
         )
         val_data_set = NumpyDataset(
-            data_prefix_el + "_val",
-            mean=mean,
-            std=std,
+            (data_prefix_el + "_val" + get_suffix(perturbation, ycbcr)),
+            # mean=mean,
+            # std=std,
             key=key,
         )
         test_data_set = NumpyDataset(
-            data_prefix_el + "_test",
-            mean=mean,
-            std=std,
+            (data_prefix_el + "_test" + get_suffix(perturbation, ycbcr)),
+            # mean=mean,
+            # std=std,
             key=key,
         )
         data_set_list.append((train_data_set, val_data_set, test_data_set))
 
     if len(data_set_list) == 1:
         train_data_loader = DataLoader(
-            train_data_set,
+            data_set_list[0][0],
             batch_size=batch_size,
             shuffle=True,
             num_workers=3,
@@ -281,47 +345,41 @@ def create_data_loaders(data_prefix: str, batch_size: int) -> tuple:
         )
 
         val_data_loader = DataLoader(
-            val_data_set,
+            data_set_list[0][1],
             batch_size=batch_size,
             shuffle=False,
             num_workers=3,
             collate_fn=custom_collate,
         )
-        test_data_sets: Any = test_data_set
-    elif len(data_set_list) > 1:
-        train_data_sets = [el[0] for el in data_set_list]
-        val_data_sets = [el[1] for el in data_set_list]
-        test_data_sets = [el[2] for el in data_set_list]
+        test_data_set = data_set_list[0][2]
+    elif len(data_set_list) == 2:
+        # Combine datasets
         train_data_loader = DataLoader(
-            CombinedDataset(train_data_sets),
+            DoubleDataset(data_set_list[0][0], data_set_list[1][0]),
             batch_size=batch_size,
             shuffle=True,
             num_workers=3,
         )
         val_data_loader = DataLoader(
-            CombinedDataset(val_data_sets),
+            DoubleDataset(data_set_list[0][1], data_set_list[1][1]),
             batch_size=batch_size,
             shuffle=False,
             num_workers=3,
         )
+        test_data_set = CombinedDataset(data_set_list[0][2], data_set_list[1][2])
     else:
         raise RuntimeError("Failed to load data from the specified prefixes.")
     print("----------------------")
-    return train_data_loader, val_data_loader, test_data_sets
-
-
-import os
-import torch
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-from torch.utils.tensorboard import SummaryWriter
+    return train_data_loader, val_data_loader, test_data_set
 
 
 def main():
     """Trains a model to classify images."""
     args = _parse_args()
     print(args)
-    experiment.set_name(args.data_prefix[0].split("/")[-1])
+    experiment.set_name(
+        args.data_prefix[0].split("/")[-1] + get_suffix(args.perturbation, args.ycbcr)
+    )
 
     if args.class_weights and len(args.class_weights) != args.nclasses:
         raise ValueError(
@@ -334,8 +392,14 @@ def main():
 
     make_binary_labels = args.nclasses == 2
     train_data_loader, val_data_loader, test_data_set = create_data_loaders(
-        args.data_prefix, args.batch_size
+        args.data_prefix, args.batch_size, args.ycbcr, args.perturbation
     )
+    # if args.late:
+    #     train_image_data_loader, val_image_data_loader, test_image_data_loader = (
+    #         create_data_loaders(
+    #             args.data_prefix[1], args.batch_size, args.ycbcr, args.perturbation
+    #         )
+    #     )
 
     validation_list = []
     loss_list = []
@@ -348,7 +412,16 @@ def main():
         model = CNN(args.nclasses, args.features).to("cuda")
         print("feature is ", args.features)
     elif args.model == "resnet":
-        model = ResNet50(2, 3).to("cuda")
+        if args.ycbcr or args.single_channel:
+            model = ResNet50(2, 1).to("cuda")
+        # elif args.cross:
+        # model = ResNetWithAttention(Bottleneck, [3, 4, 6, 3], num_classes=10)
+        if args.late:
+            model = LateFusionResNet(num_classes=2).to("cuda")
+        if args.cross:
+            model = CrossAttentionModel(2048).to("cuda")
+        else:
+            model = ResNet50(2, 3).to("cuda")
     else:
         model = Regression(args.nclasses).to("cuda")
 
@@ -369,6 +442,7 @@ def main():
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
+    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
 
     for e in tqdm(
         range(args.epochs), desc="Epochs", unit="epochs", disable=not args.pbar
@@ -384,25 +458,33 @@ def main():
         ):
             model.train()
             optimizer.zero_grad()
-            if type(train_data_loader.dataset) is CombinedDataset:
-                batch_images = {
-                    key: batch[key].to("cuda", non_blocking=True)
-                    for key in train_data_loader.dataset.key
-                }
-            else:
-                batch_images = batch[train_data_loader.dataset.key].to(
-                    "cuda", non_blocking=True
-                )
-                if args.upscale:
-                    batch_images = upscale_wavelet_packets(batch_images)
-                    # pass
-                # print(batch_images.shape)
+            # if type(train_data_loader.dataset) is CombinedDataset:
+            # batch_images = {
+            # key: batch[key].to("cuda", non_blocking=True)
+            # for key in train_data_loader.dataset.key
+            # }
+            # else:
+            # batch_images = batch[train_data_loader.dataset.key].to(
+            # "cuda", non_blocking=True
+            # )
 
-            batch_labels = batch["label"].to("cuda", non_blocking=True)
+            # batch_labels = batch["label"].to("cuda", non_blocking=True)
+            # if args.ycbcr:
+            # y_channel = batch_images[..., 0]
+            # batch_images = y_channel.unsqueeze(-1)
+            # if args.single_channel:
+            # first_band = batch_images[:, 3, :, :]
+            # batch_images = first_band.unsqueeze(1)
+            # batch_images = extract_y_channel(batch_images)
+            # print(batch.keys())
+            if args.late or args.cross:
+                image_set_1 = batch["image1"].to("cuda")
+                image_set_2 = batch["image2"].to("cuda")
+                batch_labels = batch["label"].to("cuda")
             if make_binary_labels:
                 batch_labels[batch_labels > 0] = 1
-
-            out = model(batch_images)
+            # out = model((batch_images))
+            out = model(image_set_1, image_set_2)
             loss = loss_fun((out), batch_labels)
             ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
             acc = torch.sum(ok_mask.type(torch.float32)) / len(batch_labels)
@@ -433,12 +515,16 @@ def main():
                     writer.add_graph(model, batch_images)
 
         # Validation loop
+
+        # scheduler.step()
         val_acc, val_loss = val_test_loop(
             val_data_loader,
             model,
             loss_fun,
             make_binary_labels=make_binary_labels,
             pbar=args.pbar,
+            ycbcr=args.ycbcr,
+            single_channel=args.single_channel,
         )
         validation_list.append([step_total, e, val_acc])
 
@@ -455,7 +541,11 @@ def main():
                 + "_"
                 + str(args.model)
             )
-            torch.save(model.state_dict(), model_file)
+            if args.ycbcr:
+                model_file += "_ycbcr"
+            if args.perturbation:
+                model_file += "_perturbed"
+            torch.save(model.state_dict(), model_file + ".pt")
             print(f"New best model saved with validation accuracy: {best_val_acc:.2f}")
 
         if args.tensorboard:
@@ -474,31 +564,41 @@ def main():
         + f"{args.epochs}e"
         + "_"
         + str(args.model)
-        + ".pt"
     )
-    save_model(model, model_file + "_" + str(args.seed) + ".pt")
-    print(model_file, " saved.")
+    if args.ycbcr:
+        model_file += "_ycbcr"
+    if args.perturbation:
+        model_file += "_perturbed"
+    # save_model(model, model_file + "_" + str(args.seed) + ".pt")
+    # print(model_file, " saved.")
 
     # Run over the test set.
     print("Training done testing....")
+    # Load the best model for final evaluation (optional)
+    if best_model_path:
+        model.load_state_dict(torch.load(best_model_path))
+        print(f"Loaded best model from {best_model_path}")
+
     if type(test_data_set) is list:
         test_data_set = CombinedDataset(test_data_set)
-
-    test_data_loader = DataLoader(
-        test_data_set,
-        args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=custom_collate,
-    )
+    #
+    # test_data_loader = DataLoader(
+    #     test_data_set,
+    #     args.batch_size,
+    #     shuffle=False,
+    #     num_workers=args.num_workers,
+    #     collate_fn=custom_collate,
+    # )
     with torch.no_grad():
         test_acc, test_loss = val_test_loop(
-            test_data_loader,
+            test_data_set,
             model,
             loss_fun,
             make_binary_labels=make_binary_labels,
             pbar=not args.pbar,
             _description="Testing",
+            ycbcr=args.ycbcr,
+            single_channel=args.single_channel,
         )
         print("test acc", test_acc)
 
@@ -506,24 +606,10 @@ def main():
         writer.add_scalar("accuracy/test", test_acc, step_total)
         writer.add_scalar("loss/test", test_loss, step_total)
 
-    _save_stats(
-        model_file,
-        loss_list,
-        accuracy_list,
-        validation_list,
-        test_acc,
-        args,
-        len(iter(train_data_loader)),
-    )
     log_model(experiment, model=model, model_name="TheModel")
 
     if args.tensorboard:
         writer.close()
-
-    # Load the best model for final evaluation (optional)
-    if best_model_path:
-        model.load_state_dict(torch.load(best_model_path))
-        print(f"Loaded best model from {best_model_path}")
 
 
 def _save_stats(
