@@ -263,7 +263,7 @@ def load_perturb_and_stack(
     for path_to_image in path_list:
         image = Image.open(path_to_image)
         # image = resize_and_pad(image, target_size=(128, 128))
-        image = image.resize((112, 112))
+        image = image.resize((224, 224))
 
         if random.random() < perturb_prob and perturbation:
             num_perturbations = random.randint(1, 5)

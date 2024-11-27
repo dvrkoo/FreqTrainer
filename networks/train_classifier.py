@@ -1,5 +1,6 @@
 """Source code to train deepfake detectors in wavelet and pixel space."""
 
+from torch.optim.lr_scheduler import LambdaLR
 import argparse
 import os
 import pickle
@@ -21,15 +22,14 @@ from tqdm import tqdm
 from data_loader import CombinedDataset, NumpyDataset, DoubleNumpyDataset
 from models import CNN, Regression, compute_parameter_total, save_model
 from resnet import ResNet50
-from resnet import Bottleneck
-from resnet import LateFusionResNet, CrossAttentionModel
+from resnet import LateFusionResNet, CrossAttentionModel, CrossAttentionModelFreq
 
 experiment = Experiment(
     api_key="WQRfjlovs7RSjYUmjlMvNt3PY", project_name="general", workspace="dvrkoo"
 )
 hyper_params = {
     "learning_rate": 1e-3,
-    "batch_size": 64,
+    "batch_size": 16,
 }
 
 seed = 42
@@ -53,6 +53,7 @@ def val_test_loop(
     _description: str = "Validation",
     pbar: bool = False,
     ycbcr: bool = False,
+    cross: bool = False,
     single_channel: bool = False,
 ) -> Tuple[float, Any]:
     """Test the performance of a model on a data set by calculating the prediction accuracy and loss of the model.
@@ -93,15 +94,34 @@ def val_test_loop(
             #     first_band = batch_images[:, 3, :, :]
             #     batch_images = first_band.unsqueeze(1)
             #     # if args.late:
-            image_set_1 = val_batch["image1"].to("cuda")
-            image_set_2 = val_batch["image2"].to("cuda")
-            batch_labels = val_batch["label"].to("cuda")
-            out = model(image_set_1, image_set_2)
+            # image_set_1 = val_batch["image1"][:, [2, 3], :, :].to("cuda")
+            # image_set_2 = val_batch["image2"].to("cuda")
+            if cross:
+                freq1 = val_batch["packets1"][:, [0], :, :].to("cuda")
+                freq2 = val_batch["packets1"][:, [1], :, :].to("cuda")
+                freq3 = val_batch["packets1"][:, [2], :, :].to("cuda")
+                freq4 = val_batch["packets1"][:, [3], :, :].to("cuda")
+                energy_vector = compute_energy_vector(freq1, freq2, freq3, freq4)
+                batch_labels = val_batch["label"].to("cuda")
+                out = model(freq1, freq2, freq3, freq4, energy_vector)
+            else:
+                batch_images = val_batch[data_loader.dataset.key].to("cuda", non_blocking=True)
+                batch_labels = val_batch["label"].to("cuda", non_blocking=True)
+                batch_labels[batch_labels > 0] = 1
+                out = model(batch_images)
             # out = model((batch_images))
             if make_binary_labels:
-                batch_labels[batch_labels > 0] = 1
+                batch_labels = torch.nn.functional.one_hot(
+                    batch_labels, num_classes=2
+                ).float()
+
             val_loss = loss_fun(torch.squeeze(out), batch_labels)
-            ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
+            # ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
+
+            ok_mask = torch.eq(
+                torch.max(out, dim=-1)[1], torch.argmax(batch_labels, dim=-1)
+            )
+
             val_ok += torch.sum(ok_mask).item()
             val_total += batch_labels.shape[0]
         val_acc = val_ok / val_total
@@ -153,7 +173,7 @@ def _parse_args():
     parser.add_argument(
         "--weight-decay",
         type=float,
-        default=1e-5,
+        default=1e-4,
         help="weight decay for optimizer (default: 0)",
     )
     parser.add_argument(
@@ -239,6 +259,29 @@ def _parse_args():
     return parser.parse_args()
 
 
+# Define your custom augmentation function for wavelet packets
+def augment_wavelet_packet_batch(batch):
+    # Example augmentations:
+    # - Randomly apply scaling, noise addition, or frequency domain flipping
+    augmented_batch = []
+    for image in batch:
+        # Example: Adding random Gaussian noise
+        if torch.rand(1).item() < 0.5:  # 50% chance to apply noise
+            noise = torch.randn_like(image) * 0.1  # Adjust the noise level as needed
+            image = image + noise
+
+        # Example: Random scaling of frequency bands
+        if torch.rand(1).item() < 0.5:  # 50% chance to scale
+            scale_factor = (
+                torch.rand(1).item() * 0.5 + 0.75
+            )  # Scale between 0.75 and 1.25
+            image = image * scale_factor
+
+        augmented_batch.append(image)
+
+    return torch.stack(augmented_batch)
+
+
 def custom_collate(batch):
     # Assuming the key for images is 'image', adjust if it's different
     # print(batch[0].keys())
@@ -282,7 +325,7 @@ def get_suffix(perturbation, ycbcr):
 
 
 def create_data_loaders(
-    data_prefix: str, batch_size: int, ycbcr=False, perturbation=False
+    data_prefix: str, batch_size: int, ycbcr=False, perturbation=False, test=False
 ) -> tuple:
     """Create the data loaders needed for training.
 
@@ -314,44 +357,66 @@ def create_data_loaders(
             key = "packets" + data_prefix_el.split("_")[-1]
         elif "fourier" in data_prefix_el.split("_"):
             key = "fourier"
-
-        train_data_set = NumpyDataset(
-            (data_prefix_el + "_train" + get_suffix(perturbation, ycbcr)),
-            # mean=mean,
-            # std=std,
-            key=key,
-        )
-        val_data_set = NumpyDataset(
-            (data_prefix_el + "_val" + get_suffix(perturbation, ycbcr)),
-            # mean=mean,
-            # std=std,
-            key=key,
-        )
+        # check if dir exists
+        if os.path.exists(data_prefix_el + "_train" + get_suffix(perturbation, ycbcr)):
+            train_data_set = NumpyDataset(
+                (data_prefix_el + "_train" + get_suffix(perturbation, ycbcr)),
+                # mean=mean,
+                # std=std,
+                key=key,
+            )
+        else:
+            train_data_set = None
+        if os.path.exists(data_prefix_el + "_val" + get_suffix(perturbation, ycbcr)):
+            val_data_set = NumpyDataset(
+                (data_prefix_el + "_val" + get_suffix(perturbation, ycbcr)),
+                # mean=mean,
+                # std=std,
+                key=key,
+            )
+        else:
+            val_data_set = None
         test_data_set = NumpyDataset(
             (data_prefix_el + "_test" + get_suffix(perturbation, ycbcr)),
             # mean=mean,
             # std=std,
             key=key,
         )
+        print(len(test_data_set))
         data_set_list.append((train_data_set, val_data_set, test_data_set))
 
     if len(data_set_list) == 1:
-        train_data_loader = DataLoader(
-            data_set_list[0][0],
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=3,
-            collate_fn=custom_collate,
-        )
+        print("----------------------")
+        if os.path.exists(data_prefix_el + "_train" + get_suffix(perturbation, ycbcr)):
+            train_data_loader = DataLoader(
+                data_set_list[0][0],
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=3,
+                collate_fn=custom_collate,
+            )
+        else:
+            train_data_loader = None
+        if os.path.exists(data_prefix_el + "_val" + get_suffix(perturbation, ycbcr)):
+            val_data_loader = DataLoader(
+                data_set_list[0][1],
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=3,
+                collate_fn=custom_collate,
+            )
+        else:
+            val_data_loader = None
 
-        val_data_loader = DataLoader(
-            data_set_list[0][1],
+        test_data_set = DataLoader(
+            data_set_list[0][2],
             batch_size=batch_size,
             shuffle=False,
             num_workers=3,
             collate_fn=custom_collate,
         )
-        test_data_set = data_set_list[0][2]
+        print(len(test_data_set))
+
     elif len(data_set_list) == 2:
         # Combine datasets
         train_data_loader = DataLoader(
@@ -369,8 +434,55 @@ def create_data_loaders(
         test_data_set = CombinedDataset(data_set_list[0][2], data_set_list[1][2])
     else:
         raise RuntimeError("Failed to load data from the specified prefixes.")
-    print("----------------------")
     return train_data_loader, val_data_loader, test_data_set
+
+
+
+def compute_energy_for_batch(batch):
+    """
+    Compute the energy vector for each image in a batch.
+
+    Args:
+        batch (Tensor): A batch of images with shape (batch_size, num_channels, height, width).
+
+    Returns:
+        Tensor: A tensor containing the energy vector for each image in the batch.
+                Shape: (batch_size, num_channels)
+    """
+    # Compute the energy for each channel (band) in the image
+    energy_vector = torch.sum(
+        batch**2, dim=[2, 3]
+    )  # Sum over height and width dimensions
+
+    return energy_vector
+
+
+# Example usage:
+# Assume freq1, freq2, freq3, and freq4 are tensors of shape (batch_size, 1, height, width)
+def compute_energy_vector(freq1, freq2, freq3, freq4):
+    """
+    Compute the combined energy vector for a batch of images across four frequency bands.
+
+    Args:
+        freq1, freq2, freq3, freq4 (Tensor): Tensors of shape (batch_size, 1, height, width)
+                                             representing different frequency bands.
+
+    Returns:
+        Tensor: A tensor containing the energy vectors for each image in the batch.
+                Shape: (batch_size, 4)
+    """
+    # Compute energy for each frequency band
+    energy1 = compute_energy_for_batch(freq1)
+    energy2 = compute_energy_for_batch(freq2)
+    energy3 = compute_energy_for_batch(freq3)
+    energy4 = compute_energy_for_batch(freq4)
+
+    # Stack energies to create the energy vector
+    energy_vector = torch.cat(
+        [energy1, energy2, energy3, energy4], dim=1
+    )  # Shape: (batch_size, 4)
+
+    return energy_vector
 
 
 def main():
@@ -378,7 +490,9 @@ def main():
     args = _parse_args()
     print(args)
     experiment.set_name(
-        args.data_prefix[0].split("/")[-1] + get_suffix(args.perturbation, args.ycbcr)
+        args.data_prefix[0].split("/")[-1]
+        + get_suffix(args.perturbation, args.ycbcr)
+        + "_a_h_v_d"
     )
 
     if args.class_weights and len(args.class_weights) != args.nclasses:
@@ -419,7 +533,7 @@ def main():
         if args.late:
             model = LateFusionResNet(num_classes=2).to("cuda")
         if args.cross:
-            model = CrossAttentionModel(2048).to("cuda")
+            model = CrossAttentionModelFreq(2048).to("cuda")
         else:
             model = ResNet50(2, 3).to("cuda")
     else:
@@ -437,12 +551,24 @@ def main():
     if args.class_weights:
         loss_fun = torch.nn.NLLLoss(weight=torch.tensor(args.class_weights).to("cuda"))
     else:
-        loss_fun = torch.nn.CrossEntropyLoss()
+        # loss_fun = torch.nn.CrossEntropyLoss()
+        loss_fun = torch.nn.BCEWithLogitsLoss()
 
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
     )
-    # scheduler = StepLR(optimizer, step_size=10, gamma=0.1)
+
+    def warmup_scheduler(epoch):
+        if epoch < warmup_epochs:
+            return epoch / warmup_epochs  # Linear warmup
+        else:
+            return 1.0  # Keep the learning rate constant or switch to another scheduler
+
+    warmup_epochs = 10  # Number of warmup epochs
+
+    # Learning rate scheduler
+    # scheduler = LambdaLR(optimizer, lr_lambda=warmup_scheduler)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5,10], gamma=0.1)
 
     for e in tqdm(
         range(args.epochs), desc="Epochs", unit="epochs", disable=not args.pbar
@@ -458,6 +584,9 @@ def main():
         ):
             model.train()
             optimizer.zero_grad()
+            if it < 170:
+                batch["packets1"] = augment_wavelet_packet_batch(batch["packets1"])
+
             # if type(train_data_loader.dataset) is CombinedDataset:
             # batch_images = {
             # key: batch[key].to("cuda", non_blocking=True)
@@ -478,15 +607,33 @@ def main():
             # batch_images = extract_y_channel(batch_images)
             # print(batch.keys())
             if args.late or args.cross:
-                image_set_1 = batch["image1"].to("cuda")
-                image_set_2 = batch["image2"].to("cuda")
+                # image_set_1 = batch["image1"][:, [2, 3], :, :].to("cuda")
+                # image_set_2 = batch["image2"].to("cuda")
+                freq1 = batch["packets1"][:, [0], :, :].to("cuda")
+                freq2 = batch["packets1"][:, [1], :, :].to("cuda")
+                freq3 = batch["packets1"][:, [2], :, :].to("cuda")
+                freq4 = batch["packets1"][:, [3], :, :].to("cuda")
+                energy_vector = compute_energy_vector(freq1, freq2, freq3, freq4)
                 batch_labels = batch["label"].to("cuda")
+                out = model(freq1, freq2, freq3, freq4, energy_vector)
+            else:
+                batch_images = batch[train_data_loader.dataset.key].to("cuda", non_blocking=True)
+                out = model(batch_images)
+
             if make_binary_labels:
+                batch_labels = batch["label"].to("cuda")
                 batch_labels[batch_labels > 0] = 1
+                batch_labels = torch.nn.functional.one_hot(
+                    batch_labels, num_classes=2
+                ).float()
+            
+
             # out = model((batch_images))
-            out = model(image_set_1, image_set_2)
             loss = loss_fun((out), batch_labels)
-            ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
+            # ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
+            ok_mask = torch.eq(
+                torch.max(out, dim=-1)[1], torch.argmax(batch_labels, dim=-1)
+            )
             acc = torch.sum(ok_mask.type(torch.float32)) / len(batch_labels)
 
             if it % 10 == 0:
@@ -508,6 +655,7 @@ def main():
             loss_list.append([step_total, e, loss.item()])
             accuracy_list.append([step_total, e, acc.item()])
 
+
             if args.tensorboard:
                 writer.add_scalar("loss/train", loss.item(), step_total)
                 writer.add_scalar("accuracy/train", acc.item(), step_total)
@@ -516,7 +664,7 @@ def main():
 
         # Validation loop
 
-        # scheduler.step()
+        scheduler.step()
         val_acc, val_loss = val_test_loop(
             val_data_loader,
             model,
@@ -524,6 +672,7 @@ def main():
             make_binary_labels=make_binary_labels,
             pbar=args.pbar,
             ycbcr=args.ycbcr,
+            cross=args.cross,
             single_channel=args.single_channel,
         )
         validation_list.append([step_total, e, val_acc])
@@ -540,6 +689,7 @@ def main():
                 # + f"{args.epochs}e"
                 + "_"
                 + str(args.model)
+                + "_no_mean"
             )
             if args.ycbcr:
                 model_file += "_ycbcr"
@@ -569,6 +719,8 @@ def main():
         model_file += "_ycbcr"
     if args.perturbation:
         model_file += "_perturbed"
+    if args.cross:
+        model_file += "_cross"
     # save_model(model, model_file + "_" + str(args.seed) + ".pt")
     # print(model_file, " saved.")
 
@@ -579,19 +731,19 @@ def main():
         model.load_state_dict(torch.load(best_model_path))
         print(f"Loaded best model from {best_model_path}")
 
-    if type(test_data_set) is list:
-        test_data_set = CombinedDataset(test_data_set)
+    # if type(test_data_set) is list:
+    #     test_data_set = CombinedDataset(test_data_set)
     #
-    # test_data_loader = DataLoader(
-    #     test_data_set,
-    #     args.batch_size,
-    #     shuffle=False,
-    #     num_workers=args.num_workers,
-    #     collate_fn=custom_collate,
-    # )
+    test_data_loader = DataLoader(
+        test_data_set,
+        args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=custom_collate,
+    )
     with torch.no_grad():
         test_acc, test_loss = val_test_loop(
-            test_data_set,
+            test_data_loader,
             model,
             loss_fun,
             make_binary_labels=make_binary_labels,

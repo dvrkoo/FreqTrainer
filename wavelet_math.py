@@ -100,7 +100,7 @@ def batch_packet_preprocessing(
     eps: float = 1e-12,
     log_scale: bool = False,
     mode: str = "reflect",
-    cuda: bool = False,
+    cuda: bool = True,
     ycbcr: bool = False,
 ) -> np.ndarray:
     """Preprocess image batches by computing the wavelet packet representation.

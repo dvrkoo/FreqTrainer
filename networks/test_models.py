@@ -3,9 +3,12 @@ import torch
 from resnet import ResNet50
 from resnet import LateFusionResNet
 from train_classifier import create_data_loaders
+from resnet import CrossAttentionModel, CrossAttentionModelFreq
+from train_classifier import compute_energy_vector
 import argparse
 
 parser = argparse.ArgumentParser(description="args")
+parser.add_argument("--cross", action="store_true"),
 parser.add_argument(
     "--late",
     action="store_true",
@@ -39,7 +42,7 @@ for folder in os.listdir("./log"):
         model_name = folder_path.split("/")[-1]
         model_path = os.path.join(
             "./log",
-            f"224_{model_name}_crops_packets_haar_reflect_1_0.001__resnet",
+            f"224_{model_name}_packets_haar_reflect_1_5e-05__resnet_v_d",
         )
         if args.ycbcr:
             model_path += "_ycbcr"
@@ -53,7 +56,11 @@ for folder in os.listdir("./log"):
             else (
                 LateFusionResNet(num_classes=2).to("cuda")
                 if args.late
-                else ResNet50(2, 3).to("cuda")
+                else (
+                    CrossAttentionModelFreq(2048).to("cuda")
+                    if args.cross
+                    else ResNet50(2, 3).to("cuda")
+                )
             )
         )
         #
@@ -61,15 +68,16 @@ for folder in os.listdir("./log"):
         model.load_state_dict(state_dict)
         model.to(device)
         model.eval()  # Set the model to evaluation mode
+        print("folder", folder)
         models[folder] = model
 
         # Load the validation data loader for this model
         data_prefix = [
-            f"/home/nick/ff_crops/224_{model_name}_crops_packets_haar_reflect_1",
-            f"/home/nick/ff_crops/{model_name}_crops_raw",
+            f"/seidenas/users/nmarini/datasets/output/224_{model_name}_packets_haar_reflect_1",
+            f"/seidenas/users/nmarini/datasets/output/{model_name}_raw",
         ]
         _, val_data_loader, _ = create_data_loaders(
-            data_prefix, 64, ycbcr=args.ycbcr, perturbation=False
+            data_prefix, 16, ycbcr=args.ycbcr, perturbation=False
         )
         val_data_loaders[folder] = val_data_loader
 
@@ -83,32 +91,6 @@ def calculate_tpr_tnr(tp, fn, tn, fp):
     tnr = tn / (tn + fp) if tn + fp > 0 else 0
     return tpr * 100, tnr * 100
 
-
-#
-# model_path = os.path.join(
-#     "./log",
-#     f"224_deepfake_face2face_crops_packets_haar_reflect_1_0.001__resnet.pt",
-# )
-#
-# model_path_2 = os.path.join(
-#     "./log",
-#     f"224_deepfake_faceswap_crops_packets_haar_reflect_1_0.001__resnet.pt",
-# )
-#
-# model_path += ".pt"
-# Load the model
-# model = ResNet50(2, 1).to("cuda") if args.ycbcr else ResNet50(2, 3).to("cuda")
-# model2 = ResNet50(2, 1).to("cuda") if args.ycbcr else ResNet50(2, 3).to("cuda")
-# state_dict = torch.load(model_path, map_location=device)
-# model.load_state_dict(state_dict)
-# model.to(device)
-# model.eval()  # Set the model to evaluation mode
-# models["Deepfake_face2face"] = model
-# state_dict = torch.load(model_path_2, map_location=device)
-# model2.load_state_dict(state_dict)
-# model2.to(device)
-# model2.eval()  # Set the model to evaluation
-# models["Deepfake_faceswap"] = model2
 
 # Cross-testing of each model on all validation datasets
 for model_name, model in models.items():
@@ -131,11 +113,17 @@ for model_name, model in models.items():
                 #     batch_images = y_channel.unsqueeze(-1)
                 # if args.single_channel:
                 #     batch_images = batch_images[:, 3, :, :].unsqueeze(1)
-                batch_images_1 = val_batch["image1"].to(device)
-                batch_images_2 = val_batch["image2"].to(device)
+                # batch_images_1 = val_batch["image1"][:, [2, 3], :, :].to(device)
+                # batch_images_2 = val_batch["image2"].to(device)
                 batch_labels = val_batch["label"].to(device)
-                out = model(batch_images_1, batch_images_2)
+                # out = model(batch_images_1, batch_images_2)
+                image1 = val_batch["image1"][:, [0], :, :].to(device)
+                image2 = val_batch["image1"][:, [1], :, :].to(device)
+                image3 = val_batch["image1"][:, [2], :, :].to(device)
+                image4 = val_batch["image1"][:, [3], :, :].to(device)
+                energy_vector = compute_energy_vector(image1, image2, image3, image4)
                 batch_labels[batch_labels > 0] = 1
+                out = model(image1, image2, image3, image4, energy_vector)
                 predicted_labels = torch.max(out, dim=-1)[1]
                 # file_paths = val_batch["file_path"]
 
@@ -170,8 +158,10 @@ for model_name, model in models.items():
 
         # Save positive indices
         torch.save(
-            positive_indices, f"./tpnr/{model_name}_{dataset_name}_positive_indices.pt"
+            positive_indices,
+            f"./tpnr/{model_name}_{dataset_name}_positive_indices.pt",
         )
         torch.save(
-            negative_indices, f"./tpnr/{model_name}_{dataset_name}_negative_indices.pt"
+            negative_indices,
+            f"./tpnr/{model_name}_{dataset_name}_negative_indices.pt",
         )
