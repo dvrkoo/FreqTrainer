@@ -2,6 +2,7 @@ import os
 import torch
 from resnet import ResNet50
 from resnet import LateFusionResNet
+from resnet import CrossAttentionModel
 from train_classifier import create_data_loaders
 from resnet import CrossAttentionModel, CrossAttentionModelFreq
 from train_classifier import compute_energy_vector
@@ -9,6 +10,10 @@ import argparse
 
 parser = argparse.ArgumentParser(description="args")
 parser.add_argument("--cross", action="store_true"),
+parser.add_argument(
+    "--cross",
+    action="store_true",
+)
 parser.add_argument(
     "--late",
     action="store_true",
@@ -54,13 +59,9 @@ for folder in os.listdir("./log"):
             ResNet50(2, 1).to("cuda")
             if args.ycbcr or args.single_channel
             else (
-                LateFusionResNet(num_classes=2).to("cuda")
-                if args.late
-                else (
-                    CrossAttentionModelFreq(2048).to("cuda")
-                    if args.cross
-                    else ResNet50(2, 3).to("cuda")
-                )
+                CrossAttentionModel(2048).to("cuda")
+                if args.cross
+                else ResNet50(2, 3).to("cuda")
             )
         )
         #
@@ -73,8 +74,8 @@ for folder in os.listdir("./log"):
 
         # Load the validation data loader for this model
         data_prefix = [
-            f"/seidenas/users/nmarini/datasets/output/224_{model_name}_packets_haar_reflect_1",
-            f"/seidenas/users/nmarini/datasets/output/{model_name}_raw",
+            # f"/home/nick/ff_crops/224_{model_name}_crops_packets_haar_reflect_1",
+            f"/home/nick/Face/c40/output/224_{model_name}_packets_haar_reflect_1",
         ]
         _, val_data_loader, _ = create_data_loaders(
             data_prefix, 16, ycbcr=args.ycbcr, perturbation=False
@@ -113,17 +114,13 @@ for model_name, model in models.items():
                 #     batch_images = y_channel.unsqueeze(-1)
                 # if args.single_channel:
                 #     batch_images = batch_images[:, 3, :, :].unsqueeze(1)
-                # batch_images_1 = val_batch["image1"][:, [2, 3], :, :].to(device)
+
+                batch_images_1 = val_batch[val_loader.dataset.key].to(device)
                 # batch_images_2 = val_batch["image2"].to(device)
                 batch_labels = val_batch["label"].to(device)
-                # out = model(batch_images_1, batch_images_2)
-                image1 = val_batch["image1"][:, [0], :, :].to(device)
-                image2 = val_batch["image1"][:, [1], :, :].to(device)
-                image3 = val_batch["image1"][:, [2], :, :].to(device)
-                image4 = val_batch["image1"][:, [3], :, :].to(device)
-                energy_vector = compute_energy_vector(image1, image2, image3, image4)
+                out = model(batch_images_1)
                 batch_labels[batch_labels > 0] = 1
-                out = model(image1, image2, image3, image4, energy_vector)
+                out = model(batch_images_1)
                 predicted_labels = torch.max(out, dim=-1)[1]
                 # file_paths = val_batch["file_path"]
 

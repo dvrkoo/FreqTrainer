@@ -82,10 +82,10 @@ def val_test_loop(
             #     }
             # else:
             # TODO: uncomment if not late fusion
-            # batch_images = val_batch[data_loader.dataset.key].to(
-            #     "cuda", non_blocking=True
-            # )
-            # batch_labels = val_batch["label"].to("cuda", non_blocking=True)
+            batch_images = val_batch[data_loader.dataset.key].to(
+                "cuda", non_blocking=True
+            )
+            batch_labels = val_batch["label"].to("cuda", non_blocking=True)
             # if ycbcr:
             #     y_channel = batch_images[..., 0]
             #     batch_images = y_channel.unsqueeze(-1)
@@ -94,22 +94,12 @@ def val_test_loop(
             #     first_band = batch_images[:, 3, :, :]
             #     batch_images = first_band.unsqueeze(1)
             #     # if args.late:
-            # image_set_1 = val_batch["image1"][:, [2, 3], :, :].to("cuda")
+
+            # image_set_1 = val_batch["image1"].to("cuda")
             # image_set_2 = val_batch["image2"].to("cuda")
-            if cross:
-                freq1 = val_batch["packets1"][:, [0], :, :].to("cuda")
-                freq2 = val_batch["packets1"][:, [1], :, :].to("cuda")
-                freq3 = val_batch["packets1"][:, [2], :, :].to("cuda")
-                freq4 = val_batch["packets1"][:, [3], :, :].to("cuda")
-                energy_vector = compute_energy_vector(freq1, freq2, freq3, freq4)
-                batch_labels = val_batch["label"].to("cuda")
-                out = model(freq1, freq2, freq3, freq4, energy_vector)
-            else:
-                batch_images = val_batch[data_loader.dataset.key].to("cuda", non_blocking=True)
-                batch_labels = val_batch["label"].to("cuda", non_blocking=True)
-                batch_labels[batch_labels > 0] = 1
-                out = model(batch_images)
-            # out = model((batch_images))
+            # batch_labels = val_batch["label"].to("cuda")
+            # out = model(image_set_1, image_set_2)
+            out = model((batch_images))
             if make_binary_labels:
                 batch_labels = torch.nn.functional.one_hot(
                     batch_labels, num_classes=2
@@ -161,13 +151,13 @@ def _parse_args():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=64,
+        default=128,
         help="input batch size for testing (default: 512)",
     )
     parser.add_argument(
         "--learning-rate",
         type=float,
-        default=1e-4,
+        default=1e-3,
         help="learning rate for optimizer (default: 1e-3)",
     )
     parser.add_argument(
@@ -437,7 +427,6 @@ def create_data_loaders(
     return train_data_loader, val_data_loader, test_data_set
 
 
-
 def compute_energy_for_batch(batch):
     """
     Compute the energy vector for each image in a batch.
@@ -568,7 +557,9 @@ def main():
 
     # Learning rate scheduler
     # scheduler = LambdaLR(optimizer, lr_lambda=warmup_scheduler)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5,10], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        optimizer, milestones=[5, 10], gamma=0.1
+    )
 
     for e in tqdm(
         range(args.epochs), desc="Epochs", unit="epochs", disable=not args.pbar
@@ -584,28 +575,25 @@ def main():
         ):
             model.train()
             optimizer.zero_grad()
-            if it < 170:
-                batch["packets1"] = augment_wavelet_packet_batch(batch["packets1"])
 
-            # if type(train_data_loader.dataset) is CombinedDataset:
-            # batch_images = {
-            # key: batch[key].to("cuda", non_blocking=True)
-            # for key in train_data_loader.dataset.key
-            # }
-            # else:
-            # batch_images = batch[train_data_loader.dataset.key].to(
-            # "cuda", non_blocking=True
-            # )
+            if type(train_data_loader.dataset) is CombinedDataset:
+                batch_images = {
+                    key: batch[key].to("cuda", non_blocking=True)
+                    for key in train_data_loader.dataset.key
+                }
+            else:
+                batch_images = batch[train_data_loader.dataset.key].to(
+                    "cuda", non_blocking=True
+                )
 
-            # batch_labels = batch["label"].to("cuda", non_blocking=True)
-            # if args.ycbcr:
-            # y_channel = batch_images[..., 0]
-            # batch_images = y_channel.unsqueeze(-1)
-            # if args.single_channel:
-            # first_band = batch_images[:, 3, :, :]
-            # batch_images = first_band.unsqueeze(1)
-            # batch_images = extract_y_channel(batch_images)
-            # print(batch.keys())
+                batch_labels = batch["label"].to("cuda", non_blocking=True)
+            if args.ycbcr:
+                y_channel = batch_images[..., 0]
+                batch_images = y_channel.unsqueeze(-1)
+            if args.single_channel:
+                first_band = batch_images[:, 3, :, :]
+                batch_images = first_band.unsqueeze(1)
+                # batch_images = extract_y_channel(batch_images)
             if args.late or args.cross:
                 # image_set_1 = batch["image1"][:, [2, 3], :, :].to("cuda")
                 # image_set_2 = batch["image2"].to("cuda")
@@ -617,18 +605,16 @@ def main():
                 batch_labels = batch["label"].to("cuda")
                 out = model(freq1, freq2, freq3, freq4, energy_vector)
             else:
-                batch_images = batch[train_data_loader.dataset.key].to("cuda", non_blocking=True)
+                batch_images = batch[train_data_loader.dataset.key].to(
+                    "cuda", non_blocking=True
+                )
                 out = model(batch_images)
 
             if make_binary_labels:
                 batch_labels = batch["label"].to("cuda")
                 batch_labels[batch_labels > 0] = 1
-                batch_labels = torch.nn.functional.one_hot(
-                    batch_labels, num_classes=2
-                ).float()
-            
-
-            # out = model((batch_images))
+                out = model((batch_images))
+            # out = model(image_set_1,image_set_2)
             loss = loss_fun((out), batch_labels)
             # ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
             ok_mask = torch.eq(
@@ -654,7 +640,6 @@ def main():
             step_total += 1
             loss_list.append([step_total, e, loss.item()])
             accuracy_list.append([step_total, e, acc.item()])
-
 
             if args.tensorboard:
                 writer.add_scalar("loss/train", loss.item(), step_total)

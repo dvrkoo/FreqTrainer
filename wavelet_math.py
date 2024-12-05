@@ -52,6 +52,43 @@ def rgb_to_ycbcr(images):
     return ycbcr.reshape(images.shape)
 
 
+def compute_packet_rep_2d(
+    image: np.ndarray, wavelet_str: str = "haar", max_lev: int = 3
+) -> np.ndarray:
+    """Numpy based computation of a 2d full-packet representation.
+
+    Args:
+        image (np.ndarray): Image of shape [height, width].
+        wavelet_str (str, optional): The wavelet to use. Defaults to "haar".
+        max_lev (int, optional): The number of levels in the representation.
+            Defaults to 3.
+
+    Returns:
+        np.ndarray: A ready to plot wavelet packet image.
+    """
+    wavelet = pywt.Wavelet(wavelet_str)
+    wp_tree = pywt.WaveletPacket2D(image, wavelet=wavelet, mode="reflect")
+    # Get the full decomposition
+    wp_keys = list(product(["a", "h", "v", "d"], repeat=max_lev))
+    count = 0
+    img_rows = None
+    img = []
+    for node in wp_keys:
+        packet = np.squeeze(wp_tree["".join(node)].data)
+        if img_rows is not None:
+            img_rows = np.concatenate([img_rows, packet], axis=1)
+        else:
+            img_rows = packet
+        count += 1
+        if count >= np.sqrt(len(wp_keys)):
+            count = 0
+            img.append(img_rows)
+            img_rows = None
+
+    img_pywt = np.concatenate(img, axis=0)
+    return img_pywt
+
+
 def compute_pytorch_packet_representation_2d_tensor(
     pt_data: torch.Tensor,
     wavelet_str: str = "db5",

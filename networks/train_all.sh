@@ -4,3 +4,4 @@
 # CUDA_VISIBLE_DEVICES=0 python3 train_classifier.py --model resnet --tensorboard --batch-size 16 --epochs 50 --data-prefix "/seidenas/users/nmarini/datasets/output/224_FaceSwap_packets_haar_reflect_1" "/seidenas/users/nmarini/datasets/output/FaceSwap_raw"  --cross
 # CUDA_VISIBLE_DEVICES=0 python3 train_classifier.py --model resnet --tensorboard --batch-size 16 --epochs 50 --data-prefix "/seidenas/users/nmarini/datasets/output/224_FaceShifter_packets_haar_reflect_1" "/seidenas/users/nmarini/datasets/output/FaceShifter_raw" --cross
 CUDA_VISIBLE_DEVICES=0 python3 train_classifier.py --model resnet --tensorboard --batch-size 16 --epochs 20 --data-prefix "/seidenas/users/nmarini/datasets/output/224_all_crops_packets_haar_reflect_1"  --cross #--learning-rate 0.001
+

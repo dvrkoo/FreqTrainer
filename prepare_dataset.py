@@ -141,7 +141,6 @@ def get_label_of_pixel(
             return 0
         else:
             return 1
-    return label
 
 
 def get_label_of_folder(

@@ -399,7 +399,7 @@ class ResNet(nn.Module):
         # Perform average pooling and flatten
         x = self.avgpool(x)
         x = x.view(x.size(0), -1)
-        # x = self.fc(x)  # remove for late fusion
+        x = self.fc(x)  # remove for late fusion
         return x
 
     def _make_layer(self, ResBlock, blocks, planes, stride=1):
