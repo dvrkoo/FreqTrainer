@@ -112,6 +112,11 @@ def main():
         default="B_stylegan",
         help="name of folder with fake data (default: B_stylegan)",
     )
+    parser.add_argument(
+        "--ycbcr",
+        action="store_true",
+        help="use YCbCr color space instead of RGB (default: False)",
+    )
     args = parser.parse_args()
 
     print(args)
@@ -137,12 +142,22 @@ def main():
         args.data_dir + "/face2face.png",
         args.data_dir + "faceswap.png",
     ]
-    real_images = [
-        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in real_images
-    ]
-    fake_images = [
-        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
-    ]
+
+    if args.ycbcr:  # Load and process images
+        real_images = [
+            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in real_images
+        ]
+        fake_images = [
+            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in fake_images
+        ]
+    else:
+        real_images = [
+            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in real_images
+        ]
+        fake_images = [
+            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
+        ]
+
     all_images = real_images + fake_images
     wavelet = "haar"
     max_lev = 1
@@ -172,10 +187,10 @@ def main():
     scale_min = np.min([np.abs(dec).min() for dec in decompositions]) + 2e-4
     scale_max = np.max([np.abs(dec).max() for dec in decompositions])
 
-    cmap = "cividis"  # Color map for visualization
+    # cmap = "cividis"  # Color map for visualization
     # cmap = "viridis"
     # cmap = "inferno"
-    # cmap = "magma"
+    cmap = "magma"
 
     # Add subband labels at the top
     for j in range(4):

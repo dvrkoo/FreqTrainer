@@ -130,32 +130,62 @@ def main():
         "/home/nick/ff_crops/224_face2face_crops_packets_haar_reflect_1",
     ]
     for folder in data_prefix:
-        train_data_loader, _, _ = create_data_loaders(folder, 256, False, False)
-        variances = []
+        # Create data loaders
+        train_data_loader, _, _ = create_data_loaders(
+            folder,
+            256,
+            False,
+            False,
+        )
 
-        for it, batch in enumerate(
-            tqdm(iter(train_data_loader), desc=f"Processing {folder}", unit="batch")
-        ):
+        variances_real = []  # Variance for real images (label == 0)
+        variances_fake = []  # Variance for fake images (label == 1)
+
+        # Iterate over batches
+        for batch in tqdm(train_data_loader, desc=f"Processing {folder}", unit="batch"):
             batch_images = batch[train_data_loader.dataset.key].to(
                 "cuda", non_blocking=True
             )
             batch_labels = batch["label"].to("cuda", non_blocking=True)
 
-            # Filter images where label == 1
-            images_with_label_1 = batch_images[batch_labels == 1]
+            # Separate images by labels
+            real_images = batch_images[batch_labels == 0]
+            fake_images = batch_images[batch_labels == 1]
 
-            # Calculate variance for each image
-            for img in images_with_label_1:
-                img_variance = torch.var(img.float())  # Convert to float for precision
-                variances.append(img_variance.item())  # Append to list
+            # Calculate variance for real images
+            for img in real_images:
+                img_variance = torch.var(img.float())
+                variances_real.append(img_variance.item())
 
-        # Plot histogram for the current dataset
-        plt.figure(figsize=(10, 6))
-        plt.hist(variances, bins=50, alpha=0.75, color="blue", edgecolor="black")
-        plt.title(f"Histogram of Variance - {folder}")
+            # Calculate variance for fake images
+            for img in fake_images:
+                img_variance = torch.var(img.float())
+                variances_fake.append(img_variance.item())
+
+        # Plot histogram for real and fake variances
+        plt.figure(figsize=(12, 8))
+        plt.hist(
+            variances_fake,
+            bins=50,
+            alpha=0.6,
+            color="red",
+            edgecolor="black",
+            label="Fake Images",
+        )
+        plt.hist(
+            variances_real,
+            bins=50,
+            alpha=0.6,
+            color="blue",
+            edgecolor="black",
+            label="Real Images",
+        )
+        plt.title(f"Variance Distribution - {folder.split("/")[4].split("_")[1]}")
         plt.xlabel("Variance")
         plt.ylabel("Frequency")
+        plt.legend()
         plt.grid(True)
+        plt.savefig(f"{folder}_variance_plot.png")
         plt.savefig(f"./{folder.split("/")[4].split("_")[1]}_variance.png")
 
 
