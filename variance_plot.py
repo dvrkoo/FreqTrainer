@@ -138,8 +138,12 @@ def main():
             False,
         )
 
-        variances_real = []  # Variance for real images (label == 0)
-        variances_fake = []  # Variance for fake images (label == 1)
+        variances_real = [
+            [] for _ in range(4)
+        ]  # Variances for real images (one list per wavelet band)
+        variances_fake = [
+            [] for _ in range(4)
+        ]  # Variances for fake images (one list per wavelet band)
 
         # Iterate over batches
         for batch in tqdm(train_data_loader, desc=f"Processing {folder}", unit="batch"):
@@ -152,41 +156,50 @@ def main():
             real_images = batch_images[batch_labels == 0]
             fake_images = batch_images[batch_labels == 1]
 
-            # Calculate variance for real images
+            # Calculate per-band variance for real images
             for img in real_images:
-                img_variance = torch.var(img.float())
-                variances_real.append(img_variance.item())
+                # Variance per spatial dimension, then average over channels
+                band_variances = torch.var(img.float(), dim=(1, 2))  # Shape: [4, 3]
+                band_variances = band_variances.mean(dim=1)  # Shape: [4]
+                for i, var in enumerate(band_variances):
+                    variances_real[i].append(var.item())
 
-            # Calculate variance for fake images
+            # Calculate per-band variance for fake images
             for img in fake_images:
-                img_variance = torch.var(img.float())
-                variances_fake.append(img_variance.item())
+                band_variances = torch.var(img.float(), dim=(1, 2))  # Shape: [4, 3]
+                band_variances = band_variances.mean(dim=1)  # Shape: [4]
+                for i, var in enumerate(band_variances):
+                    variances_fake[i].append(var.item())
 
-        # Plot histogram for real and fake variances
-        plt.figure(figsize=(12, 8))
-        plt.hist(
-            variances_fake,
-            bins=50,
-            alpha=0.6,
-            color="red",
-            edgecolor="black",
-            label="Fake Images",
-        )
-        plt.hist(
-            variances_real,
-            bins=50,
-            alpha=0.6,
-            color="blue",
-            edgecolor="black",
-            label="Real Images",
-        )
-        plt.title(f"Variance Distribution - {folder.split("/")[4].split("_")[1]}")
-        plt.xlabel("Variance")
-        plt.ylabel("Frequency")
-        plt.legend()
-        plt.grid(True)
-        plt.savefig(f"{folder}_variance_plot.png")
-        plt.savefig(f"./{folder.split("/")[4].split("_")[1]}_variance.png")
+        # Plot histograms for each band
+        plt.figure(figsize=(16, 12))
+        for band_idx in range(4):
+            plt.subplot(2, 2, band_idx + 1)
+            plt.hist(
+                variances_fake[band_idx],
+                bins=50,
+                alpha=0.6,
+                color="red",
+                edgecolor="black",
+                label="Fake Images",
+            )
+            plt.hist(
+                variances_real[band_idx],
+                bins=50,
+                alpha=0.6,
+                color="blue",
+                edgecolor="black",
+                label="Real Images",
+            )
+            plt.title(f"Variance Distribution - Band {band_idx + 1}")
+            plt.xlabel("Variance")
+            plt.ylabel("Frequency")
+            plt.legend()
+            plt.grid(True)
+
+        plt.tight_layout()
+        plt.savefig(f"{folder}_variance_per_band_plot.png")
+        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_variance_per_band.png")
 
 
 if __name__ == "__main__":
