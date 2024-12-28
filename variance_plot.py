@@ -24,6 +24,9 @@ def get_suffix(perturbation, ycbcr):
     return suffix
 
 
+bands = ["LL", "LH", "HL", "HH"]
+
+
 def create_data_loaders(
     data_prefix: str, batch_size: int, ycbcr=False, perturbation=False, test=False
 ) -> tuple:
@@ -191,7 +194,7 @@ def main():
                 edgecolor="black",
                 label="Real Images",
             )
-            plt.title(f"Variance Distribution - Band {band_idx + 1}")
+            plt.title(f"Variance Distribution - Band {bands[band_idx]}")
             plt.xlabel("Variance")
             plt.ylabel("Frequency")
             plt.legend()
