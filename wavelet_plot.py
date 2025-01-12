@@ -9,10 +9,14 @@ import numpy as np
 import torch
 from pywt._doc_utils import _2d_wp_basis_coords
 
+
 from wavelet_math import (
     compute_packet_rep_2d,
     compute_pytorch_packet_representation_2d_tensor,
 )
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
 
 def draw_2d_wp_basis(shape, keys, fmt="k", plot_kwargs=None, ax=None, label_levels=0):
@@ -97,7 +101,7 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="/home/nick/ff_crops/visualize/",
+        default="./visualize/",
         help="path of folder containing the data (default: ./data/)",
     )
     parser.add_argument(
@@ -142,6 +146,7 @@ def main():
         args.data_dir + "/face2face.png",
         args.data_dir + "faceswap.png",
     ]
+<<<<<<< Updated upstream
 
     if args.ycbcr:  # Load and process images
         real_images = [
@@ -158,16 +163,32 @@ def main():
             cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
         ]
 
+=======
+    # real_images = [
+    #     cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in real_images
+    # ]
+    # fake_images = [
+    #     cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
+    # ]
+    # let's make real and fake in ycbcr instead
+    real_images = [
+        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in real_images
+    ]
+    fake_images = [
+        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in fake_images
+    ]
+>>>>>>> Stashed changes
     all_images = real_images + fake_images
     wavelet = "haar"
     max_lev = 1
     decompositions = []
     for img in all_images:
+        # img = img[:, :, 0]
         img_resized = cv2.resize(img, (224, 224))
         img_grayscale = (
             torch.from_numpy(np.mean(img_resized, -1).astype(np.float32))
             .unsqueeze(0)
-            .cuda()
+            .to(device)
         )
         packets = compute_pytorch_packet_representation_2d_tensor(
             img_grayscale, wavelet_str=wavelet, max_lev=max_lev
