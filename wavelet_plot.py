@@ -94,144 +94,115 @@ def compute_packet_rep_img(image, wavelet_str, max_lev):
 
 
 def main():
-    """Compute some wavelet packets of real and generated images for visual comparison."""
+    """Compute wavelet packets of real and generated images for visual comparison with RGB."""
     parser = argparse.ArgumentParser(
-        description="Plot wavelet decomposition of real and fake imgs"
+        description="Plot wavelet decomposition of real and fake images in RGB."
     )
     parser.add_argument(
         "--data-dir",
         type=str,
         default="./visualize/",
-        help="path of folder containing the data (default: ./data/)",
+        help="Path to the folder containing the data (default: ./data/)",
     )
     parser.add_argument(
         "--real-data",
         type=str,
         default="A_ffhq",
-        help="name of folder with real data (default: A_ffhq)",
+        help="Folder name for real data (default: A_ffhq)",
     )
     parser.add_argument(
         "--fake-data",
         type=str,
         default="B_stylegan",
-        help="name of folder with fake data (default: B_stylegan)",
+        help="Folder name for fake data (default: B_stylegan)",
     )
     parser.add_argument(
         "--ycbcr",
         action="store_true",
-        help="use YCbCr color space instead of RGB (default: False)",
+        help="Use YCbCr color space instead of RGB for wavelet decomposition (default: False)",
     )
     args = parser.parse_args()
 
     print(args)
 
-    pairs = []
-    pairs.append(
-        read_pair(
-            args.data_dir + "/original.png",
-            args.data_dir + "/faceshifter.png",
-        )
-    )
-    pairs.append(
-        read_pair(
-            args.data_dir + "/original.png",
-            args.data_dir + "/deepfake.png",
-        )
-    )
+    # Image file paths
     real_images = [args.data_dir + "/original.png"]
     fake_images = [
         args.data_dir + "/faceshifter.png",
         args.data_dir + "/deepfake.png",
         args.data_dir + "/neuraltextures.png",
         args.data_dir + "/face2face.png",
-        args.data_dir + "faceswap.png",
+        args.data_dir + "/faceswap.png",
     ]
-<<<<<<< Updated upstream
 
-    if args.ycbcr:  # Load and process images
-        real_images = [
-            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in real_images
-        ]
-        fake_images = [
-            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in fake_images
-        ]
-    else:
-        real_images = [
-            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in real_images
-        ]
-        fake_images = [
-            cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
-        ]
+    # Load and preprocess images
+    def preprocess_image(img_path, use_ycbcr=False):
+        img = cv2.imread(img_path)
+        rgb_img = cv2.resize(img, (224, 224))  # Keep RGB for visualization
+        if use_ycbcr:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)[:, :, 0]  # Y channel only
+        else:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Grayscale conversion
+        img = cv2.resize(img, (224, 224)).astype(np.float32)
+        return rgb_img, img
 
-=======
-    # real_images = [
-    #     cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in real_images
-    # ]
-    # fake_images = [
-    #     cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2RGB) for img in fake_images
-    # ]
-    # let's make real and fake in ycbcr instead
-    real_images = [
-        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in real_images
+    all_images = [
+        preprocess_image(img, args.ycbcr) for img in real_images + fake_images
     ]
-    fake_images = [
-        cv2.cvtColor(cv2.imread(img), cv2.COLOR_BGR2YCrCb) for img in fake_images
-    ]
->>>>>>> Stashed changes
-    all_images = real_images + fake_images
+
+    # Separate RGB and grayscale
+    rgb_images, gray_images = zip(*all_images)
+
+    # Wavelet decomposition
     wavelet = "haar"
     max_lev = 1
     decompositions = []
-    for img in all_images:
-        # img = img[:, :, 0]
-        img_resized = cv2.resize(img, (224, 224))
-        img_grayscale = (
-            torch.from_numpy(np.mean(img_resized, -1).astype(np.float32))
-            .unsqueeze(0)
-            .to(device)
-        )
+    for img in gray_images:
+        img_tensor = (
+            torch.from_numpy(img).unsqueeze(0).unsqueeze(0)
+        )  # Add batch & channel dims
         packets = compute_pytorch_packet_representation_2d_tensor(
-            img_grayscale, wavelet_str=wavelet, max_lev=max_lev
+            img_tensor, wavelet_str=wavelet, max_lev=max_lev
         )
         decompositions.append(torch.squeeze(packets).cpu().numpy())
 
-    # Set up the grid for plotting
+    # Plot setup
     num_images = len(all_images)
     fig, axes = plt.subplots(
         num_images,
         5,
         figsize=(20, 5 * num_images),
-        gridspec_kw={"width_ratios": [0.5, 1, 1, 1, 1]},
+        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1]},
     )
 
-    subbands = ["LL/A", "LH/H", "HL/V", "HH/D"]
+    subbands = ["RGB", "LL/A", "LH/H", "HL/V", "HH/D"]
     scale_min = np.min([np.abs(dec).min() for dec in decompositions]) + 2e-4
     scale_max = np.max([np.abs(dec).max() for dec in decompositions])
 
-    # cmap = "cividis"  # Color map for visualization
-    # cmap = "viridis"
-    # cmap = "inferno"
-    cmap = "magma"
+    # Add subband titles
+    for j, subband in enumerate(subbands):
+        axes[0, j].set_title(subband, fontsize=14)
 
-    # Add subband labels at the top
-    for j in range(4):
-        axes[0, j + 1].set_title(subbands[j], fontsize=14)
-
-    row_labels = [
-        "Real",
+    # Row labels
+    row_labels = ["Real"] + [
         "FaceShifter",
         "DeepFake",
         "NeuralTextures",
         "Face2Face",
         "FaceSwap",
     ]
-    # Plot each image's decomposition
-    for i, dec in enumerate(decompositions):
+
+    # Plot images and decompositions
+    for i, (rgb_img, dec) in enumerate(zip(rgb_images, decompositions)):
+        # Add row label in a dedicated column or as text overlay
         row_label = row_labels[i]
-        axes[i, 0].axis("off")  # Leftmost column for labels
+        axes[i, 0].imshow(cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB))
+        axes[i, 0].axis("off")
+
+        # Add the row label as a text overlay (preserves it)
         axes[i, 0].text(
-            0.5,
-            0.5,
+            -0.1,
+            0.5,  # Position slightly to the left of the image
             row_label,
             ha="center",
             va="center",
@@ -242,17 +213,27 @@ def main():
 
         abs_packets = np.abs(dec)
         for j in range(4):  # Loop through subbands
-            axes[i, j + 1].imshow(
-                abs_packets[j],
-                norm=colors.LogNorm(vmin=scale_min, vmax=scale_max),
-                cmap=cmap,
-            )
+            if j == 0:  # LL band
+                ll_band = np.log1p(
+                    abs_packets[j]
+                )  # Log scaling for brightness reduction
+                axes[i, j + 1].imshow(
+                    ll_band,
+                    cmap="gray",
+                    norm=colors.Normalize(vmin=ll_band.min(), vmax=ll_band.max()),
+                )
+            else:  # LH, HL, HH bands
+                axes[i, j + 1].imshow(
+                    abs_packets[j],
+                    norm=colors.LogNorm(vmin=scale_min, vmax=scale_max),
+                    cmap="gray",
+                )
             axes[i, j + 1].axis("off")
 
-    # Adjust layout
+    # Finalize layout
     plt.tight_layout()
-    # plt.show()
-    plt.savefig("wavelet_decomposition.png", dpi=300, bbox_inches="tight")
+    plt.savefig("wavelet_decomposition_rgb.png", dpi=300, bbox_inches="tight")
+    plt.show()
 
 
 if __name__ == "__main__":
