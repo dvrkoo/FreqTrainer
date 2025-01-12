@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 import torch
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def custom_collate(batch):
@@ -132,6 +133,7 @@ def main():
         "/home/nick/ff_crops/224_faceswap_crops_packets_haar_reflect_1",
         "/home/nick/ff_crops/224_face2face_crops_packets_haar_reflect_1",
     ]
+
     for folder in data_prefix:
         # Create data loaders
         train_data_loader, _, _ = create_data_loaders(
@@ -173,36 +175,61 @@ def main():
                 band_variances = band_variances.mean(dim=1)  # Shape: [4]
                 for i, var in enumerate(band_variances):
                     variances_fake[i].append(var.item())
+        max_real_freq = 0
+        max_fake_freq = 0
+        for i in range(4):
+            # Compute histograms for real and fake images
+            real_hist, _ = np.histogram(variances_real[i], bins=50)
+            fake_hist, _ = np.histogram(variances_fake[i], bins=50)
+            max_real_freq = max(max_real_freq, real_hist.max())
+            max_fake_freq = max(max_fake_freq, fake_hist.max())
 
-        # Plot histograms for each band
-        plt.figure(figsize=(16, 12))
+        y_max = (
+            max(max_real_freq, max_fake_freq) * 1.2
+        )  # Add a 20% margin for extra space
+        # Plot histogram for real images
+        plt.figure(figsize=(16, 8))
         for band_idx in range(4):
-            plt.subplot(2, 2, band_idx + 1)
-            plt.hist(
-                variances_fake[band_idx],
-                bins=50,
-                alpha=0.6,
-                color="red",
-                edgecolor="black",
-                label="Fake Images",
-            )
+            plt.subplot(1, 4, band_idx + 1)
             plt.hist(
                 variances_real[band_idx],
                 bins=50,
-                alpha=0.6,
+                alpha=0.7,
                 color="blue",
                 edgecolor="black",
-                label="Real Images",
+                label=f"Band {band_idx + 1}",
             )
-            plt.title(f"Variance Distribution - Band {bands[band_idx]}")
+            plt.title(f"Real Images - Band {band_idx + 1}")
             plt.xlabel("Variance")
             plt.ylabel("Frequency")
             plt.legend()
             plt.grid(True)
-
+            plt.ylim(0, y_max)  # Fixed y-axis limit for better comparability
         plt.tight_layout()
-        plt.savefig(f"{folder}_variance_per_band_plot.png")
-        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_variance_per_band.png")
+        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_real_variance.png")
+        plt.close()
+
+        # Plot histogram for fake images
+        plt.figure(figsize=(16, 8))
+        for band_idx in range(4):
+            plt.subplot(1, 4, band_idx + 1)
+            plt.hist(
+                variances_fake[band_idx],
+                bins=50,
+                alpha=0.7,
+                color="red",
+                edgecolor="black",
+                label=f"Band {band_idx + 1}",
+            )
+            plt.title(f"Fake Images - Band {band_idx + 1}")
+            plt.xlabel("Variance")
+            plt.ylabel("Frequency")
+            plt.legend()
+            plt.grid(True)
+            plt.ylim(0, y_max)  # Fixed y-axis limit for better comparability
+        plt.tight_layout()
+        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_fake_variance.png")
+        plt.close()
 
 
 if __name__ == "__main__":
