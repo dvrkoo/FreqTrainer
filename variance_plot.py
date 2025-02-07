@@ -134,7 +134,20 @@ def main():
         "/home/nick/ff_crops/224_face2face_crops_packets_haar_reflect_1",
     ]
 
+    # Manually defined axis limits for each band (adjust these values as needed)
+    # For example, these limits set the x-axis (variance) range for each of the 4 bands.
+    x_limits = [
+        (0, 30000),  # Band 1
+        (0, 250),  # Band 2
+        (0, 250),  # Band 3
+        (0, 25),  # Band 4
+    ]
+    # Set a uniform y-axis limit (frequency) for all plots.
+    y_limits = [(0, 750), (0, 1750), (0, 1000), (0, 1800)]
+
+    global_real_variances = None
     for folder in data_prefix:
+        folder_name = folder.split("/")[4].split("_")[1]
         # Create data loaders
         train_data_loader, _, _ = create_data_loaders(
             folder,
@@ -143,12 +156,14 @@ def main():
             False,
         )
 
-        variances_real = [
-            [] for _ in range(4)
-        ]  # Variances for real images (one list per wavelet band)
-        variances_fake = [
-            [] for _ in range(4)
-        ]  # Variances for fake images (one list per wavelet band)
+        # For each folder, we need to compute fake image variances.
+        variances_fake = [[] for _ in range(4)]
+
+        # For real images, use the global values if already computed; otherwise, create local list.
+        if global_real_variances is None:
+            variances_real = [[] for _ in range(4)]
+        else:
+            variances_real = global_real_variances
 
         # Iterate over batches
         for batch in tqdm(train_data_loader, desc=f"Processing {folder}", unit="batch"):
@@ -161,55 +176,32 @@ def main():
             real_images = batch_images[batch_labels == 0]
             fake_images = batch_images[batch_labels == 1]
 
-            # Calculate per-band variance for real images
-            for img in real_images:
-                # Variance per spatial dimension, then average over channels
-                band_variances = torch.var(img.float(), dim=(1, 2))  # Shape: [4, 3]
-                band_variances = band_variances.mean(dim=1)  # Shape: [4]
-                for i, var in enumerate(band_variances):
-                    variances_real[i].append(var.item())
+            # Calculate per-band variance for real images only if not already computed.
+            if global_real_variances is None:
+                for img in real_images:
+                    # img shape: [4, H, W, 3] → compute variance across spatial dims and average over channels.
+                    band_variances = torch.var(img.float(), dim=(1, 2))  # shape: [4, 3]
+                    band_variances = band_variances.mean(dim=1)  # shape: [4]
+                    for i, var in enumerate(band_variances):
+                        variances_real[i].append(var.item())
 
-            # Calculate per-band variance for fake images
+            # Calculate per-band variance for fake images.
             for img in fake_images:
-                band_variances = torch.var(img.float(), dim=(1, 2))  # Shape: [4, 3]
-                band_variances = band_variances.mean(dim=1)  # Shape: [4]
+                band_variances = torch.var(img.float(), dim=(1, 2))
+                band_variances = band_variances.mean(dim=1)
                 for i, var in enumerate(band_variances):
                     variances_fake[i].append(var.item())
-        max_real_freq = 0
-        max_fake_freq = 0
-        for i in range(4):
-            # Compute histograms for real and fake images
-            real_hist, _ = np.histogram(variances_real[i], bins=50)
-            fake_hist, _ = np.histogram(variances_fake[i], bins=50)
-            max_real_freq = max(max_real_freq, real_hist.max())
-            max_fake_freq = max(max_fake_freq, fake_hist.max())
 
-        y_max = (
-            max(max_real_freq, max_fake_freq) * 1.2
-        )  # Add a 20% margin for extra space
-        # Plot histogram for real images
-        plt.figure(figsize=(16, 8))
-        for band_idx in range(4):
-            plt.subplot(1, 4, band_idx + 1)
-            plt.hist(
-                variances_real[band_idx],
-                bins=50,
-                alpha=0.7,
-                color="blue",
-                edgecolor="black",
-                label=f"Band {band_idx + 1}",
-            )
-            plt.title(f"Real Images - Band {band_idx + 1}")
-            plt.xlabel("Variance")
-            plt.ylabel("Frequency")
-            plt.legend()
-            plt.grid(True)
-            plt.ylim(0, y_max)  # Fixed y-axis limit for better comparability
-        plt.tight_layout()
-        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_real_variance.png")
-        plt.close()
+        # Save the computed real variances globally if not done already.
+        if global_real_variances is None:
+            global_real_variances = variances_real
 
-        # Plot histogram for fake images
+        # --------------------------------------------------
+        # Plot histograms for the current folder.
+        # (Both plots will use the same manually set x and y limits.)
+        # --------------------------------------------------
+
+        # Plot histogram for fake images for the current folder
         plt.figure(figsize=(16, 8))
         for band_idx in range(4):
             plt.subplot(1, 4, band_idx + 1)
@@ -221,15 +213,40 @@ def main():
                 edgecolor="black",
                 label=f"Band {band_idx + 1}",
             )
-            plt.title(f"Fake Images - Band {band_idx + 1}")
+            plt.title(f"{folder_name} Fake Images - Band {band_idx + 1}")
             plt.xlabel("Variance")
             plt.ylabel("Frequency")
             plt.legend()
             plt.grid(True)
-            plt.ylim(0, y_max)  # Fixed y-axis limit for better comparability
+            plt.xlim(x_limits[band_idx])  # Fixed x-axis limit for each band
+            plt.ylim(y_limits[band_idx])  # Fixed y-axis limit
         plt.tight_layout()
-        plt.savefig(f"./{folder.split('/')[4].split('_')[1]}_fake_variance.png")
+        # plt.savefig(f"{folder}_fake_variance_plot.png")
+        plt.savefig(f"./{folder_name}_fake_variance.png")
         plt.close()
+
+    plt.figure(figsize=(16, 8))
+    for band_idx in range(4):
+        plt.subplot(1, 4, band_idx + 1)
+        plt.hist(
+            global_real_variances[band_idx],
+            bins=50,
+            alpha=0.7,
+            color="blue",
+            edgecolor="black",
+            label=f"Band {band_idx + 1}",
+        )
+        plt.title(f"Real Images - Band {band_idx + 1}")
+        plt.xlabel("Variance")
+        plt.ylabel("Frequency")
+        plt.legend()
+        plt.grid(True)
+        plt.xlim(x_limits[band_idx])
+        plt.ylim(y_limits[band_idx])
+    plt.tight_layout()
+    # Save the real variance plot only once.
+    plt.savefig("real_variance_plot.png")
+    plt.close()
 
 
 if __name__ == "__main__":

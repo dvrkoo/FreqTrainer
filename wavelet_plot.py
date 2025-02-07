@@ -171,12 +171,12 @@ def main():
     fig, axes = plt.subplots(
         num_images,
         5,
-        figsize=(20, 5 * num_images),
-        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1]},
+        figsize=(20, 4 * num_images),
+        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1], "wspace": 0, "hspace": 0.01},
     )
 
     subbands = ["RGB", "LL/A", "LH/H", "HL/V", "HH/D"]
-    scale_min = np.min([np.abs(dec).min() for dec in decompositions]) + 2e-4
+    scale_min = np.min([np.abs(dec).min() for dec in decompositions]) + 1e-4
     scale_max = np.max([np.abs(dec).max() for dec in decompositions])
 
     # Add subband titles
@@ -231,7 +231,7 @@ def main():
             axes[i, j + 1].axis("off")
 
     # Finalize layout
-    plt.tight_layout()
+    plt.tight_layout(pad=0.1)
     plt.savefig("wavelet_decomposition_rgb.png", dpi=300, bbox_inches="tight")
     plt.show()
 
