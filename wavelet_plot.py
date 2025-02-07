@@ -1,5 +1,6 @@
 """Code to create wavelet packet plots."""
 
+from matplotlib.colors import PowerNorm
 import argparse
 
 import cv2
@@ -210,7 +211,6 @@ def main():
             fontsize=14,
             transform=axes[i, 0].transAxes,
         )
-
         abs_packets = np.abs(dec)
         for j in range(4):  # Loop through subbands
             if j == 0:  # LL band
@@ -225,7 +225,7 @@ def main():
             else:  # LH, HL, HH bands
                 axes[i, j + 1].imshow(
                     abs_packets[j],
-                    norm=colors.LogNorm(vmin=scale_min, vmax=scale_max),
+                    norm=PowerNorm(gamma=0.1),
                     cmap="gray",
                 )
             axes[i, j + 1].axis("off")

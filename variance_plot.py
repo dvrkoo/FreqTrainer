@@ -143,7 +143,7 @@ def main():
         (0, 25),  # Band 4
     ]
     # Set a uniform y-axis limit (frequency) for all plots.
-    y_limits = [(0, 750), (0, 1750), (0, 1000), (0, 1800)]
+    y_limits = [(0, 750), (0, 1750), (0, 1000), (0, 1900)]
 
     global_real_variances = None
     for folder in data_prefix:
