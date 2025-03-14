@@ -95,27 +95,15 @@ def compute_packet_rep_img(image, wavelet_str, max_lev):
 
 
 def main():
-    """Compute wavelet packets of real and generated images for visual comparison with RGB."""
+    """Compute wavelet packets of fake images for visual comparison with RGB."""
     parser = argparse.ArgumentParser(
-        description="Plot wavelet decomposition of real and fake images in RGB."
+        description="Plot wavelet decomposition of fake images in RGB."
     )
     parser.add_argument(
         "--data-dir",
         type=str,
         default="./visualize/",
-        help="Path to the folder containing the data (default: ./data/)",
-    )
-    parser.add_argument(
-        "--real-data",
-        type=str,
-        default="A_ffhq",
-        help="Folder name for real data (default: A_ffhq)",
-    )
-    parser.add_argument(
-        "--fake-data",
-        type=str,
-        default="B_stylegan",
-        help="Folder name for fake data (default: B_stylegan)",
+        help="Path to the folder containing the data (default: ./visualize/)",
     )
     parser.add_argument(
         "--ycbcr",
@@ -126,9 +114,17 @@ def main():
 
     print(args)
 
-    # Image file paths
-    real_images = [args.data_dir + "/original.png"]
+    # Only consider fake images (forgeries)
+    forgery_labels = [
+        "real",
+        "FaceShifter",
+        "DeepFake",
+        "NeuralTextures",
+        "Face2Face",
+        "FaceSwap",
+    ]
     fake_images = [
+        args.data_dir + "/original.png",
         args.data_dir + "/faceshifter.png",
         args.data_dir + "/deepfake.png",
         args.data_dir + "/neuraltextures.png",
@@ -136,104 +132,79 @@ def main():
         args.data_dir + "/faceswap.png",
     ]
 
-    # Load and preprocess images
+    # Preprocessing function (reads image, resizes, converts color)
     def preprocess_image(img_path, use_ycbcr=False):
         img = cv2.imread(img_path)
         rgb_img = cv2.resize(img, (224, 224))  # Keep RGB for visualization
         if use_ycbcr:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)[:, :, 0]  # Y channel only
+            # Use only the Y channel
+            proc_img = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)[:, :, 0]
         else:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Grayscale conversion
-        img = cv2.resize(img, (224, 224)).astype(np.float32)
-        return rgb_img, img
+            proc_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        proc_img = cv2.resize(proc_img, (224, 224)).astype(np.float32)
+        return rgb_img, proc_img
 
-    all_images = [
-        preprocess_image(img, args.ycbcr) for img in real_images + fake_images
-    ]
+    # Process each forgery
+    fake_data = [preprocess_image(img, args.ycbcr) for img in fake_images]
+    fake_rgb, fake_gray = zip(*fake_data)
 
-    # Separate RGB and grayscale
-    rgb_images, gray_images = zip(*all_images)
-
-    # Wavelet decomposition
+    # Compute wavelet decomposition for each forgery
     wavelet = "haar"
     max_lev = 1
-    decompositions = []
-    for img in gray_images:
-        img_tensor = (
-            torch.from_numpy(img).unsqueeze(0).unsqueeze(0)
-        )  # Add batch & channel dims
+    fake_decompositions = []
+    for img in fake_gray:
+        # Add batch & channel dimensions for torch
+        img_tensor = torch.from_numpy(img).unsqueeze(0).unsqueeze(0)
         packets = compute_pytorch_packet_representation_2d_tensor(
             img_tensor, wavelet_str=wavelet, max_lev=max_lev
         )
-        decompositions.append(torch.squeeze(packets).cpu().numpy())
+        # Remove extra dims and move to numpy
+        decomposition = torch.squeeze(packets).cpu().numpy()
+        fake_decompositions.append(decomposition)
 
-    # Plot setup
-    num_images = len(all_images)
-    fig, axes = plt.subplots(
-        num_images,
-        5,
-        figsize=(20, 4 * num_images),
-        gridspec_kw={"width_ratios": [1, 1, 1, 1, 1], "wspace": 0, "hspace": 0.01},
-    )
-
+    # Define subband titles (first subplot will show the original RGB image)
     subbands = ["RGB", "LL/A", "LH/H", "HL/V", "HH/D"]
-    scale_min = np.min([np.abs(dec).min() for dec in decompositions]) + 1e-4
-    scale_max = np.max([np.abs(dec).max() for dec in decompositions])
 
-    # Add subband titles
-    for j, subband in enumerate(subbands):
-        axes[0, j].set_title(subband, fontsize=14)
+    # For each forgery, create a separate plot
+    for label, rgb_img, dec in zip(forgery_labels, fake_rgb, fake_decompositions):
+        # Create a figure with 5 subplots in one row
+        fig, axes = plt.subplots(1, 5, figsize=(20, 4), gridspec_kw={"wspace": 0.1})
 
-    # Row labels
-    row_labels = ["Real"] + [
-        "FaceShifter",
-        "DeepFake",
-        "NeuralTextures",
-        "Face2Face",
-        "FaceSwap",
-    ]
+        # Set titles for each subplot
+        if label == forgery_labels[0]:
+            for j, subband in enumerate(subbands):
+                axes[j].set_title(subband, fontsize=14)
 
-    # Plot images and decompositions
-    for i, (rgb_img, dec) in enumerate(zip(rgb_images, decompositions)):
-        # Add row label in a dedicated column or as text overlay
-        row_label = row_labels[i]
-        axes[i, 0].imshow(cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB))
-        axes[i, 0].axis("off")
+        # First subplot: original RGB image
+        axes[0].imshow(cv2.cvtColor(rgb_img, cv2.COLOR_BGR2RGB))
+        axes[0].axis("off")
 
-        # Add the row label as a text overlay (preserves it)
-        axes[i, 0].text(
-            -0.1,
-            0.5,  # Position slightly to the left of the image
-            row_label,
-            ha="center",
-            va="center",
-            rotation=90,
-            fontsize=14,
-            transform=axes[i, 0].transAxes,
-        )
+        # Compute absolute values of the wavelet packets
         abs_packets = np.abs(dec)
-        for j in range(4):  # Loop through subbands
-            if j == 0:  # LL band
-                ll_band = np.log1p(
-                    abs_packets[j]
-                )  # Log scaling for brightness reduction
-                axes[i, j + 1].imshow(
+        # Plot each of the 4 decomposition subbands
+        for j in range(4):
+            if j == 0:
+                # For LL band, apply logarithmic scaling
+                ll_band = np.log1p(abs_packets[j])
+                axes[j + 1].imshow(
                     ll_band,
                     cmap="gray",
                     norm=colors.Normalize(vmin=ll_band.min(), vmax=ll_band.max()),
                 )
-            else:  # LH, HL, HH bands
-                axes[i, j + 1].imshow(
+            else:
+                axes[j + 1].imshow(
                     abs_packets[j],
-                    norm=PowerNorm(gamma=0.1),
                     cmap="gray",
+                    norm=PowerNorm(gamma=0.1),
                 )
-            axes[i, j + 1].axis("off")
+            axes[j + 1].axis("off")
 
-    # Finalize layout
-    plt.tight_layout(pad=0.1)
-    plt.savefig("wavelet_decomposition_rgb.png", dpi=300, bbox_inches="tight")
-    plt.show()
+        # Add a suptitle for the forgery label
+        # fig.suptitle(label, fontsize=16)
+        fig.text(0.1, 0.5, label, fontsize=16, rotation=90, va="center")
+        plt.tight_layout(pad=0.1)
+        plt.savefig(f"wavelet_decomposition_{label}.png", dpi=300, bbox_inches="tight")
+        plt.show()
 
 
 if __name__ == "__main__":
