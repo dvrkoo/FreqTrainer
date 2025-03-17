@@ -188,7 +188,7 @@ def main():
             global_real_variances = variances_real
 
         for band_idx in range(4):
-            plt.figure(figsize=(8, 6))
+            plt.figure(figsize=(4, 6))
             plt.hist(
                 variances_fake[band_idx],
                 bins=50,
@@ -209,7 +209,7 @@ def main():
             plt.close()
 
     for band_idx in range(4):
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(4, 6))
         plt.hist(
             global_real_variances[band_idx],
             bins=50,
