@@ -198,8 +198,8 @@ def main():
                 label=f"Band {subbands[band_idx]}",
             )
             plt.title(f"{folder_name} Fake Images - Band {subbands[band_idx]}")
-            plt.xlabel("Variance")
-            plt.ylabel("Frequency")
+            # plt.xlabel("Variance")
+            # plt.ylabel("Frequency")
             plt.legend()
             plt.grid(True)
             plt.xlim(x_limits[band_idx])
