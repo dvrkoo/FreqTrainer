@@ -2,8 +2,6 @@
 
 This repository contains a refactored and modular PyTorch implementation for training deepfake detection models. It supports training on both raw pixel data (RGB, YCbCr) and wavelet packet transformations, allowing for the exploration of frequency-based artifacts introduced by generative models.
 
-The codebase is designed to be easily extensible, configurable, and reproducible, leveraging modern best practices for deep learning projects.
-
 ## Key Features
 
 - **Modular Design**: The code is split into logical modules for configuration (`config.py`), data handling (`data_loader.py`), training/evaluation logic (`engine.py`), and utilities (`utils.py`).
