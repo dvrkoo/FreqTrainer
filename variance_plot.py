@@ -1,4 +1,4 @@
-from data_loader import NumpyDataset
+from networks.data_loader import NumpyDataset
 import os
 from torch.utils.data import DataLoader
 import torch

@@ -5,13 +5,9 @@ import argparse
 import os
 import pickle
 from typing import Any, Tuple
-from torch.optim.lr_scheduler import StepLR
 from data_loader import DoubleDataset
 from comet_ml import Experiment
 from comet_ml.integration.pytorch import log_model
-from transform import CustomImageDataset
-from itertools import zip_longest
-import torchvision.models as torch_models
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,10 +15,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from data_loader import CombinedDataset, NumpyDataset, DoubleNumpyDataset
-from models import CNN, Regression, compute_parameter_total, save_model
-from resnet import ResNet50
-from resnet import LateFusionResNet, CrossAttentionModel, CrossAttentionModelFreq
+
+from data_loader import CombinedDataset, NumpyDataset
+from models import CNN, Regression, compute_parameter_total
+from resnet import ResNet50, LateFusionResNet, CrossAttentionModel
 
 experiment = Experiment(
     api_key="WQRfjlovs7RSjYUmjlMvNt3PY", project_name="general", workspace="dvrkoo"
@@ -43,80 +39,6 @@ if torch.cuda.is_available():
 
 
 experiment.log_parameters(hyper_params)
-
-
-def val_test_loop(
-    data_loader,
-    model: torch.nn.Module,
-    loss_fun,
-    make_binary_labels: bool = True,
-    _description: str = "Validation",
-    pbar: bool = False,
-    ycbcr: bool = False,
-    cross: bool = False,
-    single_channel: bool = False,
-) -> Tuple[float, Any]:
-    """Test the performance of a model on a data set by calculating the prediction accuracy and loss of the model.
-
-    Args:
-        e.g. a test or validation set in a data split.
-        data_loader (DataLoader): A DataLoader loading the data set on which the performance should be measured,
-        model (torch.nn.Module): The model to evaluate.
-        loss_fun: The loss function, which is used to measure the loss of the model on the data set
-        make_binary_labels (bool): If flag is set, we only classify binarily, i.e. whether an image is real or fake.
-            In this case, the label 0 encodes 'real'. All other labels are cosidered fake data, and are set to 1.
-
-    Returns:
-        Tuple[float, Any]: The measured accuracy and loss of the model on the data set.
-    """
-    with torch.no_grad():
-        model.eval()
-        val_total = 0
-
-        val_ok = 0.0
-        for val_batch in iter(data_loader):
-            # if type(data_loader.dataset) is CombinedDataset:
-            #     batch_images = {
-            #         key: val_batch[key].to("cuda", non_blocking=True)
-            #         for key in data_loader.dataset.key
-            #     }
-            # else:
-            # TODO: uncomment if not late fusion
-            batch_images = val_batch[data_loader.dataset.key].to(
-                "cuda", non_blocking=True
-            )
-            batch_labels = val_batch["label"].to("cuda", non_blocking=True)
-            # if ycbcr:
-            #     y_channel = batch_images[..., 0]
-            #     batch_images = y_channel.unsqueeze(-1)
-            #     # batch_images = extract_y_channel(batch_images)
-            # if single_channel:
-            #     first_band = batch_images[:, 3, :, :]
-            #     batch_images = first_band.unsqueeze(1)
-            #     # if args.late:
-
-            # image_set_1 = val_batch["image1"].to("cuda")
-            # image_set_2 = val_batch["image2"].to("cuda")
-            # batch_labels = val_batch["label"].to("cuda")
-            # out = model(image_set_1, image_set_2)
-            out = model((batch_images))
-            if make_binary_labels:
-                batch_labels = torch.nn.functional.one_hot(
-                    batch_labels, num_classes=2
-                ).float()
-
-            val_loss = loss_fun(torch.squeeze(out), batch_labels)
-            # ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
-
-            ok_mask = torch.eq(
-                torch.max(out, dim=-1)[1], torch.argmax(batch_labels, dim=-1)
-            )
-
-            val_ok += torch.sum(ok_mask).item()
-            val_total += batch_labels.shape[0]
-        val_acc = val_ok / val_total
-        print("acc", val_acc, "ok", val_ok, "total", val_total)
-    return val_acc, val_loss
 
 
 def _parse_args():
@@ -152,7 +74,7 @@ def _parse_args():
         "--batch-size",
         type=int,
         default=128,
-        help="input batch size for testing (default: 512)",
+        help="input batch size for testing",
     )
     parser.add_argument(
         "--learning-rate",
@@ -249,27 +171,68 @@ def _parse_args():
     return parser.parse_args()
 
 
-# Define your custom augmentation function for wavelet packets
-def augment_wavelet_packet_batch(batch):
-    # Example augmentations:
-    # - Randomly apply scaling, noise addition, or frequency domain flipping
-    augmented_batch = []
-    for image in batch:
-        # Example: Adding random Gaussian noise
-        if torch.rand(1).item() < 0.5:  # 50% chance to apply noise
-            noise = torch.randn_like(image) * 0.1  # Adjust the noise level as needed
-            image = image + noise
+def val_test_loop(
+    data_loader,
+    model: torch.nn.Module,
+    loss_fun,
+    make_binary_labels: bool = True,
+    _description: str = "Validation",
+    pbar: bool = False,
+    ycbcr: bool = False,
+    single_channel: bool = False,
+) -> Tuple[float, Any]:
+    """Test the performance of a model on a data set by calculating the prediction accuracy and loss of the model.
 
-        # Example: Random scaling of frequency bands
-        if torch.rand(1).item() < 0.5:  # 50% chance to scale
-            scale_factor = (
-                torch.rand(1).item() * 0.5 + 0.75
-            )  # Scale between 0.75 and 1.25
-            image = image * scale_factor
+    Args:
+        e.g. a test or validation set in a data split.
+        data_loader (DataLoader): A DataLoader loading the data set on which the performance should be measured,
+        model (torch.nn.Module): The model to evaluate.
+        loss_fun: The loss function, which is used to measure the loss of the model on the data set
+        make_binary_labels (bool): If flag is set, we only classify binarily, i.e. whether an image is real or fake.
+            In this case, the label 0 encodes 'real'. All other labels are cosidered fake data, and are set to 1.
 
-        augmented_batch.append(image)
+    Returns:
+        Tuple[float, Any]: The measured accuracy and loss of the model on the data set.
+    """
+    with torch.no_grad():
+        model.eval()
+        val_total = 0
 
-    return torch.stack(augmented_batch)
+        val_ok = 0.0
+        for val_batch in iter(data_loader):
+            # if type(data_loader.dataset) is CombinedDataset:
+            #     batch_images = {
+            #         key: val_batch[key].to("cuda", non_blocking=True)
+            #         for key in data_loader.dataset.key
+            #     }
+            # else:
+            # TODO: uncomment if not late fusion
+            batch_images = val_batch[data_loader.dataset.key].to(
+                "cuda", non_blocking=True
+            )
+            batch_labels = val_batch["label"].to("cuda", non_blocking=True)
+            # if ycbcr:
+            #     y_channel = batch_images[..., 0]
+            #     batch_images = y_channel.unsqueeze(-1)
+            #     # batch_images = extract_y_channel(batch_images)
+            # if single_channel:
+            #     first_band = batch_images[:, 3, :, :]
+            #     batch_images = first_band.unsqueeze(1)
+            #     # if args.late:
+            # image_set_1 = val_batch["image1"].to("cuda")
+            # image_set_2 = val_batch["image2"].to("cuda")
+            # batch_labels = val_batch["label"].to("cuda")
+            # out = model(image_set_1, image_set_2)
+            out = model((batch_images))
+            if make_binary_labels:
+                batch_labels[batch_labels > 0] = 1
+            val_loss = loss_fun(torch.squeeze(out), batch_labels)
+            ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
+            val_ok += torch.sum(ok_mask).item()
+            val_total += batch_labels.shape[0]
+        val_acc = val_ok / val_total
+        print("acc", val_acc, "ok", val_ok, "total", val_total)
+    return val_acc, val_loss
 
 
 def custom_collate(batch):
@@ -299,10 +262,6 @@ def upscale_wavelet_packets(batch):
     result = upscaled.view(B, 4, 3, 224, 224).permute(0, 1, 3, 4, 2)
 
     return result
-
-
-# Example usage
-# Assume 'wavelet_batch' is your tensor of shape [B, 4, 112, 112, 3]
 
 
 def get_suffix(perturbation, ycbcr):
@@ -613,8 +572,11 @@ def main():
             if make_binary_labels:
                 batch_labels = batch["label"].to("cuda")
                 batch_labels[batch_labels > 0] = 1
+
+            if args.late or args.cross:
+                out = model(image_set_1, image_set_2)
+            else:
                 out = model((batch_images))
-            # out = model(image_set_1,image_set_2)
             loss = loss_fun((out), batch_labels)
             # ok_mask = torch.eq(torch.max(out, dim=-1)[1], batch_labels)
             ok_mask = torch.eq(
@@ -647,9 +609,7 @@ def main():
                 if step_total == 0:
                     writer.add_graph(model, batch_images)
 
-        # Validation loop
-
-        scheduler.step()
+        # scheduler.step()
         val_acc, val_loss = val_test_loop(
             val_data_loader,
             model,

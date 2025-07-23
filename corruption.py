@@ -95,6 +95,7 @@ def blur(image: Image) -> Image:
     Returns:
         Image: Blurred output.
     """
+    seed = 42
     np.random.seed(seed)
     # kernel size from [1, 3, 5, 7, 9]
     image = np.array(image)

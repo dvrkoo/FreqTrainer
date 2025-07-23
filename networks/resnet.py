@@ -4,7 +4,8 @@ import torch
 import torchvision.models as models
 
 
-class CrossAttentionModelPixelFreq(nn.Module):
+# ResNet model with cross-attention mechanism for late fusion of two datasets
+class CrossAttentionModel(nn.Module):
     def __init__(self, feature_dim, num_heads=8):
         """Model with cross-attention between two datasets."""
         super(CrossAttentionModelPixelFreq, self).__init__()
@@ -132,56 +133,6 @@ class CrossAttentionModelFreq(nn.Module):
         return output
 
 
-
-# this is for pixel/freq
-'''
-class CrossAttention(nn.Module):
-    def __init__(self, embed_dim, num_heads=4):
-        """Initialize cross-attention mechanism with energy information.
-
-        Args:
-            embed_dim (int): Dimensionality of the embeddings.
-            num_heads (int): Number of attention heads.
-        """
-        super(CrossAttention, self).__init__()
-        self.multihead_attn = nn.MultiheadAttention(embed_dim, num_heads)
-
-        # Linear transformation for the energy value
-        self.energy_transform = nn.Linear(1, embed_dim)
-
-    def forward(self, query, key, value, energy):
-        """Forward pass for cross-attention with energy.
-
-        Args:
-            # query (Tensor): The query tensor, typically from dataset1's features.
-            key (Tensor): The key tensor, typically from dataset2's features.
-            value (Tensor): The value tensor, typically from dataset2's features.
-            energy (Tensor): The energy value tensor, shape (batch_size, 1).
-
-        Returns:
-            Tensor: The output of the cross-attention mechanism.
-        """
-        # Transform the energy value to match the embedding dimension
-        energy_embedding = self.energy_transform(
-            energy
-        )  # Shape: (batch_size, embed_dim)
-
-        # Add the energy information to the query, key, and value tensors
-        query = query + energy_embedding.unsqueeze(
-            0
-        )  # Shape: (1, batch_size, embed_dim)
-        key = key + energy_embedding.unsqueeze(0)  # Shape: (1, batch_size, embed_dim)
-        value = value + energy_embedding.unsqueeze(
-            0
-        )  # Shape: (1, batch_size, embed_dim)
-
-        # Apply multi-head attention: Query attends to the key-value pairs
-        attn_output, _ = self.multihead_attn(query, key, value)
-        return attn_output
-
-'''
-
-# this is for cross wavelet
 class CrossAttention(nn.Module):
     def __init__(self, embed_dim, num_heads=4):
         """Initialize cross-attention mechanism.
