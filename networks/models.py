@@ -2,6 +2,9 @@
 
 import numpy as np
 import torch
+from torch import nn
+from resnet import ResNet50
+import torchvision.models as models
 
 
 def compute_parameter_total(net: torch.nn.Module) -> int:
@@ -198,3 +201,128 @@ def initialize_model(model: torch.nn.Module, path):
         path: file path of the storage file
     """
     model.load_state_dict(torch.load(path))
+
+
+## Cross attention models
+# ResNet model with cross-attention mechanism for late fusion of two datasets
+class CrossAttentionModel(nn.Module):
+    def __init__(self, feature_dim, num_heads=8):
+        """Model with cross-attention between two datasets."""
+        super(CrossAttentionModel, self).__init__()
+        # ResNet models for both datasets
+        # wavelet
+        self.resnet1 = ResNet50(2, 3)
+        # images
+        self.resnet2 = models.resnet50(pretrained=False)
+        self.resnet2 = nn.Sequential(*list(self.resnet2.children())[:-1])  # remove F
+        # self.resnet2.conv1 = nn.Conv2d(
+        #     12, 64, kernel_size=(7, 7), stride=(2, 2), padding=(3, 3), bias=False
+        # )
+
+        # Cross-attention layer
+        self.cross_attention1 = CrossAttention(feature_dim, num_heads=num_heads)
+        self.cross_attention2 = CrossAttention(feature_dim, num_heads=num_heads)
+
+        # Classifier after attention
+        self.fc = nn.Linear(
+            feature_dim + feature_dim, 2
+        )  # Assume binary classification
+
+    def forward(self, image1, image2):
+        image2 = image2.permute([0, 3, 1, 2])
+
+        # Extract features from both images
+        features1 = self.resnet1(image1)  # Output shape: (batch_size, feature_dim)
+        features2 = self.resnet2(image2)  # Output shape: (batch_size, feature_dim)
+
+        # Flatten the features
+        features1 = features1.view(features1.size(0), -1)
+        features2 = features2.view(features2.size(0), -1)
+
+        # Reshape for cross-attention (add sequence dimension for attention to work)
+        features1 = features1.unsqueeze(0)  # Shape: (1, batch_size, feature_dim)
+        features2 = features2.unsqueeze(0)  # Shape: (1, batch_size, feature_dim)
+
+        # Apply cross-attention: image1 features attend to image2 features, and vice versa
+        attn_output1 = self.cross_attention1(features1, features2, features2)
+        attn_output2 = self.cross_attention2(features2, features1, features1)
+
+        # Remove sequence dimension and combine both attention outputs
+        combined_features = torch.cat(
+            [attn_output1.squeeze(0), attn_output2.squeeze(0)], dim=1
+        )
+
+        # Pass through a fully connected layer for classification
+        output = self.fc(combined_features)
+
+        return output
+
+
+# Cross-attention mechanism
+class CrossAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads=4):
+        """Initialize cross-attention mechanism.
+
+        Args:
+            embed_dim (int): Dimensionality of the embeddings.
+            num_heads (int): Number of attention heads.
+        """
+        super(CrossAttention, self).__init__()
+        self.multihead_attn = nn.MultiheadAttention(embed_dim, num_heads)
+
+    def forward(self, query, key, value):
+        """Forward pass for cross-attention.
+
+        Args:
+            query (Tensor): The query tensor, typically from dataset1's features.
+            key (Tensor): The key tensor, typically from dataset2's features.
+            value (Tensor): The value tensor, typically from dataset2's features.
+
+        Returns:
+            Tensor: The output of the cross-attention mechanism.
+        """
+        # Apply multi-head attention: Query attends to the key-value pairs.
+        attn_output, _ = self.multihead_attn(query, key, value)
+        return attn_output
+
+
+class LateFusionResNet(nn.Module):
+    def __init__(self, num_classes):
+        super(LateFusionResNet, self).__init__()
+
+        # Load two ResNet models (e.g., ResNet18 and ResNet50)
+        # wavelet
+        self.resnet1 = ResNet50(2, 3)
+        # images
+        self.resnet2 = models.resnet50(pretrained=False)
+
+        # Remove the final fully connected layers from both
+        # self.resnet1 = nn.Sequential(
+        # *list(self.resnet1.children())[:-1]
+        # )  # remove FC layer
+        self.resnet2 = nn.Sequential(
+            *list(self.resnet2.children())[:-1]
+        )  # remove FC layer
+
+        # Fusion layer: Concatenate features from both models
+        self.fc = nn.Linear(
+            2048 + 2048, num_classes
+        )  # 512 for ResNet18 and 2048 for ResNet50
+
+    def forward(self, x1, x2):
+        # Pass inputs through both ResNet models
+        features1 = self.resnet1(x1)  # Output of ResNet50
+        # print(x2.shape)
+        x2 = x2.permute([0, 3, 1, 2])
+        features2 = self.resnet2(x2)  # Output of ResNet50
+
+        # Flatten the features from both ResNets
+        features1 = features1.view(features1.size(0), -1)
+        features2 = features2.view(features2.size(0), -1)
+
+        # Concatenate the features (late fusion)
+        combined_features = torch.cat((features1, features2), dim=1)
+
+        # Final classification layer
+        output = self.fc(combined_features)
+        return output
