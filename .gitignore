@@ -1,4 +1,5 @@
 # Byte-compiled / optimized / DLL files
+visualize/
 plots/
 /networks/runs/*
 /networks/log/*
